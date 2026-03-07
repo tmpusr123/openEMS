@@ -429,7 +429,7 @@ class WaveguidePort(Port):
             exc.AddBox(e_start, e_stop, priority=self.priority)
             self.port_props.append(exc)
 
-            # --- Waveguide modal absorber setup ---
+            # --- Waveguide modal absorber setup (excited port) ---
             if absorb_layers > 0 and use_function_expr:
                 # Set propagation direction on the E excitation
                 dirVect = [0, 0, 0]
@@ -440,21 +440,36 @@ class WaveguidePort(Port):
                 exc.SetAbsorbLayers(absorb_layers)
                 exc.SetHWeightFunction([str(x) for x in self.H_func])
 
-                # Create H-field excitation for directional source
-                # H source uses type 2 (soft current source) and 1/Zw scaling
-                # The half-timestep offset is automatic via Signal_curr
-                h_vec = [0, 0, 0]
-                h_vec[self.ny_P]  = self.direction * e_vec[self.ny_P]
-                h_vec[self.ny_PP] = self.direction * e_vec[self.ny_PP]
-                h_exc = CSX.AddExcitation(self.lbl_temp.format('h_excite'),
-                    exc_type=2, exc_val=h_vec, delay=self.delay)
-                h_exc.SetWeightFunction([str(x) for x in self.H_func])
-                # H source placed at the same location as E source
-                h_start = np.array(e_start)
-                h_stop  = np.array(e_stop)
-                h_exc.AddBox(h_start, h_stop, priority=self.priority)
-                self.port_props.append(h_exc)
+                # Pass wave impedance to the C++ absorber operator if provided
+                if self.wave_impedance is not None:
+                    exc.SetAttributeValue('WaveImpedance', str(self.wave_impedance))
 
+        elif excite == 0 and absorb_layers > 0 and use_function_expr:
+            # Non-excited port still needs an absorber.
+            # Create a zero-amplitude excitation so the C++ engine can
+            # discover absorb_layers and build Operator_Ext_WaveguideAbsorber.
+            e_start = np.array(start)
+            e_stop  = np.array(stop)
+            e_stop[self.exc_ny] = e_start[self.exc_ny]
+            e_vec = np.ones(3)
+            e_vec[self.exc_ny] = 0
+            # Zero-amplitude excitation (exc_val all zeros) — purely an absorber carrier
+            abs_exc = CSX.AddExcitation(self.lbl_temp.format('absorber'),
+                exc_type=excite_type, exc_val=[0, 0, 0], delay=self.delay)
+            abs_exc.SetWeightFunction([str(x) for x in self.E_func])
+
+            dirVect = [0, 0, 0]
+            dirVect[self.exc_ny] = self.direction
+            abs_exc.SetPropagationDir(dirVect)
+            abs_exc.SetAbsorbLayers(absorb_layers)
+            abs_exc.SetHWeightFunction([str(x) for x in self.H_func])
+
+            # Pass wave impedance to the C++ absorber operator if provided
+            if self.wave_impedance is not None:
+                abs_exc.SetAttributeValue('WaveImpedance', str(self.wave_impedance))
+
+            abs_exc.AddBox(e_start, e_stop, priority=self.priority)
+            self.port_props.append(abs_exc)
 
         # voltage/current planes
         m_start = np.array(start)

@@ -507,17 +507,13 @@ void openEMS::SetupWaveguideAbsorbers()
 		CSPropExcitation* exc = dynamic_cast<CSPropExcitation*>(exc_props.at(n));
 		if (exc && exc->GetAbsorbLayers() > 0)
 		{
+			// Register the extension now; BuildExtension() will be called
+			// later by Calc_EC() once operator coefficients are available.
+			// This allows the absorber to sample local material properties
+			// (e.g., eps_r) from the FDTD update coefficients.
 			Operator_Ext_WaveguideAbsorber* op_abs = new Operator_Ext_WaveguideAbsorber(FDTD_Op, exc);
-			if (op_abs->BuildExtension())
-			{
-				FDTD_Op->AddExtension(op_abs);
-				cout << "openEMS::SetupWaveguideAbsorbers: Added waveguide absorber with " << exc->GetAbsorbLayers() << " layer(s)" << endl;
-			}
-			else
-			{
-				cerr << "openEMS::SetupWaveguideAbsorbers: Warning: Waveguide absorber setup failed for excitation: " << exc->GetName() << endl;
-				delete op_abs;
-			}
+			FDTD_Op->AddExtension(op_abs);
+			cout << "openEMS::SetupWaveguideAbsorbers: Registered waveguide absorber with " << exc->GetAbsorbLayers() << " layer(s)" << endl;
 		}
 	}
 }
