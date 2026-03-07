@@ -347,14 +347,15 @@ class WaveguidePort(Port):
     Port, RectWGPort
 
     """
-    def __init__(self, CSX, port_nr, start, stop, exc_dir, E_WG_func, H_WG_func, kc, excite = 0, excite_type = 0, E_WG_file = None, H_WG_file = None, **kw):
-        
+    def __init__(self, CSX, port_nr, start, stop, exc_dir, E_WG_func, H_WG_func, kc, excite = 0, excite_type = 0, E_WG_file = None, H_WG_file = None, wave_impedance = None, absorb_layers = 0, **kw):
+
         super(WaveguidePort, self).__init__(CSX, port_nr=port_nr, start=start, stop=stop, excite=excite, excite_type=excite_type, **kw)
         self.exc_ny  = CheckNyDir(exc_dir)
         self.ny_P  = (self.exc_ny+1)%3
         self.ny_PP = (self.exc_ny+2)%3
         self.direction = np.sign(stop[self.exc_ny]-start[self.exc_ny])
-        self.ref_index = 1
+        self.ref_index = kw.pop("ref_index", 1)
+        self.wave_impedance = wave_impedance  # Z_w for modal absorber; if None, uses Z0/ref_index
         
         if (self.excite!=0 and stop[self.exc_ny]==start[self.exc_ny]):
             raise Exception('Port length in excitation direction may not be zero if port is excited!')
@@ -428,6 +429,32 @@ class WaveguidePort(Port):
             exc.AddBox(e_start, e_stop, priority=self.priority)
             self.port_props.append(exc)
 
+            # --- Waveguide modal absorber setup ---
+            if absorb_layers > 0 and use_function_expr:
+                # Set propagation direction on the E excitation
+                dirVect = [0, 0, 0]
+                dirVect[self.exc_ny] = self.direction
+                exc.SetPropagationDir(dirVect)
+
+                # Set absorber parameters on the E excitation
+                exc.SetAbsorbLayers(absorb_layers)
+                exc.SetHWeightFunction([str(x) for x in self.H_func])
+
+                # Create H-field excitation for directional source
+                # H source uses type 2 (soft current source) and 1/Zw scaling
+                # The half-timestep offset is automatic via Signal_curr
+                h_vec = [0, 0, 0]
+                h_vec[self.ny_P]  = self.direction * e_vec[self.ny_P]
+                h_vec[self.ny_PP] = self.direction * e_vec[self.ny_PP]
+                h_exc = CSX.AddExcitation(self.lbl_temp.format('h_excite'),
+                    exc_type=2, exc_val=h_vec, delay=self.delay)
+                h_exc.SetWeightFunction([str(x) for x in self.H_func])
+                # H source placed at the same location as E source
+                h_start = np.array(e_start)
+                h_stop  = np.array(e_stop)
+                h_exc.AddBox(h_start, h_stop, priority=self.priority)
+                self.port_props.append(h_exc)
+
 
         # voltage/current planes
         m_start = np.array(start)
@@ -456,7 +483,39 @@ class WaveguidePort(Port):
         
         i_probe.AddBox(m_start, m_stop)
         self.port_props.append(i_probe)
-        
+
+        # 1D Modal FDTD absorbing boundary (Luo & Chen, PIER 68, 2007)
+        # Place at the domain boundary. The 1D FDTD grid extends the
+        # waveguide virtually, providing perfect absorption at all
+        # frequencies including DC.
+        if not use_function_expr:
+            dir_char = 'xyz'[self.exc_ny]
+            mesh_lines = np.array(CSX.GetGrid().GetLines(dir_char))
+
+            if self.wave_impedance is not None:
+                z_wave = self.wave_impedance
+            else:
+                z_wave = Z0 / self.ref_index
+
+            # Place absorber at the actual domain boundary
+            abs_start = m_start.copy()
+            abs_stop = m_stop.copy()
+            if self.direction > 0:
+                boundary_pos = mesh_lines[0]
+            else:
+                boundary_pos = mesh_lines[-1]
+            abs_start[self.exc_ny] = boundary_pos
+            abs_stop[self.exc_ny] = boundary_pos
+
+            ma = CSX.AddModeAbsorb(self.lbl_temp.format('mode_absorb'),
+                NormalSignPositive=(self.direction > 0),
+                WaveImpedance=z_wave,
+                EModeFileName=self.E_file,
+                HModeFileName=self.H_file,
+                UseModalFDTD=True, N1D=20000)
+            ma.AddBox(abs_start.tolist(), abs_stop.tolist(), priority=self.priority)
+            self.port_props.append(ma)
+
     def CalcPort(self, sim_path, freq, ref_impedance=None, ref_plane_shift=None, signal_type='pulse', ZL = -1):
         k = 2.0*np.pi*freq/C0*self.ref_index
         self.beta = np.sqrt(k**2 - self.kc**2)

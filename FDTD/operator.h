@@ -43,7 +43,10 @@ class Operator : public Operator_Base
 	friend class Operator_Ext_Cylinder;
 	friend class Operator_Ext_LumpedRLC;
 	friend class Operator_Ext_Absorbing_BC;
-	
+	friend class Operator_Ext_ModeAbsorb;
+	friend class Operator_Ext_ModalFDTD;
+	friend class Operator_Ext_WaveguideAbsorber;
+
 public:
 	enum DebugFlags {None=0,debugMaterial=1,debugOperator=2,debugPEC=4};
 

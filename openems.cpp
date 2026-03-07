@@ -34,6 +34,11 @@
 #include "FDTD/extensions/operator_ext_conductingsheet.h"
 #include "FDTD/extensions/operator_ext_steadystate.h"
 #include "FDTD/extensions/operator_ext_absorbing_bc.h"
+#include "FDTD/extensions/operator_ext_modeabsorb.h"
+#include "FDTD/extensions/operator_ext_waveguide_absorber.h"
+#include "FDTD/extensions/operator_ext_modalfdtd.h"
+#include "CSPropModeAbsorb.h"
+#include "CSPropExcitation.h"
 #include "FDTD/extensions/engine_ext_steadystate.h"
 #include "FDTD/engine_interface_fdtd.h"
 #include "FDTD/engine_interface_cylindrical_fdtd.h"
@@ -451,6 +456,71 @@ void openEMS::SetupAbsorbingSheets()
 
 }
 
+void openEMS::SetupModeAbsorbers()
+{
+	vector<CSProperties*> cs_props;
+	cs_props = m_CSX->GetPropertyByType(CSProperties::MODE_ABSORB);
+
+	for (size_t n = 0; n < cs_props.size(); ++n)
+	{
+		CSPropModeAbsorb* cMAprops = dynamic_cast<CSPropModeAbsorb*>(cs_props.at(n));
+
+		vector<CSPrimitives*> cs_ma_prims = cMAprops->GetAllPrimitives();
+		for (size_t primIdx = 0; primIdx < cs_ma_prims.size(); ++primIdx)
+		{
+			CSPrimitives* cPrimitive = cs_ma_prims.at(primIdx);
+
+			if (cMAprops->GetUseModalFDTD())
+			{
+				Operator_Ext_ModalFDTD* op_ext = new Operator_Ext_ModalFDTD(FDTD_Op);
+				if (op_ext->SetInitParams(cPrimitive, cMAprops))
+					FDTD_Op->AddExtension(op_ext);
+				else
+				{
+					cerr << "openEMS::SetupModeAbsorbers(): Warning: Modal FDTD #" << primIdx << " setup failed." << endl;
+					delete op_ext;
+				}
+			}
+			else
+			{
+				Operator_Ext_ModeAbsorb* op_ext_ma = new Operator_Ext_ModeAbsorb(FDTD_Op);
+				if (op_ext_ma->SetInitParams(cPrimitive, cMAprops))
+					FDTD_Op->AddExtension(op_ext_ma);
+				else
+				{
+					cerr << "openEMS::SetupModeAbsorbers(): Warning: Mode absorber #" << primIdx << " setup failed." << endl;
+					delete op_ext_ma;
+				}
+			}
+		}
+	}
+}
+
+
+void openEMS::SetupWaveguideAbsorbers()
+{
+	vector<CSProperties*> exc_props;
+	exc_props = m_CSX->GetPropertyByType(CSProperties::EXCITATION);
+
+	for (size_t n = 0; n < exc_props.size(); ++n)
+	{
+		CSPropExcitation* exc = dynamic_cast<CSPropExcitation*>(exc_props.at(n));
+		if (exc && exc->GetAbsorbLayers() > 0)
+		{
+			Operator_Ext_WaveguideAbsorber* op_abs = new Operator_Ext_WaveguideAbsorber(FDTD_Op, exc);
+			if (op_abs->BuildExtension())
+			{
+				FDTD_Op->AddExtension(op_abs);
+				cout << "openEMS::SetupWaveguideAbsorbers: Added waveguide absorber with " << exc->GetAbsorbLayers() << " layer(s)" << endl;
+			}
+			else
+			{
+				cerr << "openEMS::SetupWaveguideAbsorbers: Warning: Waveguide absorber setup failed for excitation: " << exc->GetName() << endl;
+				delete op_abs;
+			}
+		}
+	}
+}
 Engine_Interface_FDTD* openEMS::NewEngineInterface(int multigridlevel)
 {
 	Operator_CylinderMultiGrid* op_cyl_mg = dynamic_cast<Operator_CylinderMultiGrid*>(FDTD_Op);
@@ -1251,7 +1321,9 @@ int openEMS::SetupFDTD()
 		FDTD_Op->AddExtension(new Operator_Ext_LumpedRLC(FDTD_Op));
 	if (m_CSX->GetQtyPropertyType(CSProperties::ABSORBING_BC)>0)
 		SetupAbsorbingSheets();
-
+	if (m_CSX->GetQtyPropertyType(CSProperties::MODE_ABSORB)>0)
+		SetupModeAbsorbers();
+	SetupWaveguideAbsorbers();
 
 	//check all properties to request material storage during operator creation...
 	SetupMaterialStorages();
