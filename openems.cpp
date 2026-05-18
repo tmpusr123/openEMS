@@ -429,6 +429,13 @@ void openEMS::SetupAbsorbingSheets()
 	for(size_t n = 0 ; n < cs_props.size() ; ++n)
 	{
 		CSPropAbsorbingBC * cABCprops = dynamic_cast<CSPropAbsorbingBC*>(cs_props.at(n));
+		if (cABCprops == NULL) {
+			// Some fork properties (e.g. CSPropModeAbsorb) register under
+			// the ABSORBING_BC type bitmask without actually inheriting from
+			// CSPropAbsorbingBC. Skip them — they are handled by their own
+			// SetupModeAbsorbers() pass.
+			continue;
+		}
 
 		// Now start iterating through primitives
 		vector<CSPrimitives*> cs_abc_prims = cABCprops->GetAllPrimitives();

@@ -33,9 +33,12 @@
 #ifndef OPERATOR_EXT_ABSORBING_BC_H
 #define OPERATOR_EXT_ABSORBING_BC_H
 
+#include <vector>
+
 #include "FDTD/operator.h"
 #include "operator_extension.h"
 #include "tools/arraylib/array_ij.h"
+#include "tools/arraylib/array_ijk.h"
 
 #include "CSPropAbsorbingBC.h"
 
@@ -50,7 +53,8 @@ public:
 	{
 		UNDEFINED	= 0,
 		MUR_1ST 	= 1,	// Mur's BC, 1st order
-		MUR_1ST_SA 	= 2		// Mur's BC, 1st order, with Super Absorption
+		MUR_1ST_SA 	= 2,	// Mur's BC, 1st order, with Super Absorption
+		CPML		= 3		// Convolution PML strip behind the sheet (CFS, kappa=1 simplification)
 	};
 
 	Operator_Ext_Absorbing_BC(Operator* op);
@@ -105,8 +109,38 @@ protected:
 	ArrayLib::ArrayIJ<FDTD_FLOAT> 	m_K2_nyP;
 	ArrayLib::ArrayIJ<FDTD_FLOAT>	m_K2_nyPP;
 
+	// ---- CPML members ----
+	// User-supplied parameters
+	unsigned int        m_pmlDepth;          // PML strip thickness (cells along m_ny)
+	double              m_pmlSigmaMax;       // 0 = auto from R(0)=1e-6
+	double              m_pmlAlphaMax;       // 0 = auto
+	double              m_pmlKappaMax;       // coordinate stretch peak (>= 1)
+	unsigned int        m_pmlProfileOrder;   // polynomial order p
 
+	// Per-depth-cell decay factor exp(-(sigma+alpha)*dt/eps0). 1D, size = m_pmlDepth.
+	std::vector<double> m_pml_b_z;
 
+	// Pre-baked per-cell convolution coefficients used by the engine. They fold
+	// the signed engine sign, c_z[k] = sigma/(sigma+alpha)*(b-1), and the local
+	// vi (or iv) coefficient at that cell into a single multiplier so the engine
+	// hook is just:  psi[k] = b_z[k]*psi + cv[i,j,k]*diff;  V += psi.
+	// Indexed as (i_along_nyP, j_along_nyPP, k_depth).
+	ArrayLib::ArrayIJK<FDTD_FLOAT> m_pml_cv_nyP;    // for V[m_nyP] update — Psi term
+	ArrayLib::ArrayIJK<FDTD_FLOAT> m_pml_cv_nyPP;   // for V[m_nyPP] update — Psi term
+	ArrayLib::ArrayIJK<FDTD_FLOAT> m_pml_ci_nyP;    // for I[m_nyP] update — Psi term
+	ArrayLib::ArrayIJK<FDTD_FLOAT> m_pml_ci_nyPP;   // for I[m_nyPP] update — Psi term
+
+	// kappa-stretch correction: sign * vi * (1/kappa - 1). Applied per-step
+	// on the m_ny-axis curl difference so the engine's full-curl update is
+	// effectively divided by kappa only on the m_ny axis.
+	ArrayLib::ArrayIJK<FDTD_FLOAT> m_pml_kapV_nyP;
+	ArrayLib::ArrayIJK<FDTD_FLOAT> m_pml_kapV_nyPP;
+	ArrayLib::ArrayIJK<FDTD_FLOAT> m_pml_kapI_nyP;
+	ArrayLib::ArrayIJK<FDTD_FLOAT> m_pml_kapI_nyPP;
+
+	// Sign of the inward step from the sheet into the PML strip (+1 or -1).
+	// PML extends opposite to where the wave lives.
+	int                 m_pmlStepSign;
 };
 
 #endif // OPERATOR_EXT_ABSORBING_BC_H

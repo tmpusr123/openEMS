@@ -89,12 +89,10 @@ void Engine::SortExtensionByPriority()
 	stable_sort(m_Eng_exts.begin(),m_Eng_exts.end(), CompareExtensions);
 	reverse(m_Eng_exts.begin(),m_Eng_exts.end());
 
-	if (g_settings.GetVerboseLevel()>1)
-	{
-		cout << "---  Engine::SortExtensionByPriority() ---" << endl;
-		for (size_t n=0; n<m_Eng_exts.size(); ++n)
-			cout << " #" << n << ": " << m_Eng_exts.at(n)->GetExtensionName() << " (" << m_Eng_exts.at(n)->GetPriority() << ")" << endl;
-	}
+	// Force-print active extensions for diagnostics, regardless of verbose level.
+	std::cerr << "--- Engine::SortExtensionByPriority() ---" << std::endl;
+	for (size_t n=0; n<m_Eng_exts.size(); ++n)
+		std::cerr << " #" << n << ": " << m_Eng_exts.at(n)->GetExtensionName() << " (" << m_Eng_exts.at(n)->GetPriority() << ")" << std::endl;
 }
 
 void Engine::Reset()

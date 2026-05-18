@@ -114,6 +114,13 @@ bool Operator_Ext_TFSF::BuildExtension()
 	{
 		prop = vec_prop.at(p);
 		elec = prop->ToExcitation();
+		if (elec==NULL)
+		{
+			// Some forks register multi-type properties (e.g. CSPropModeAbsorb)
+			// under the EXCITATION bitmask without inheriting from
+			// CSPropExcitation. Skip them — only true excitations are TFSF.
+			continue;
+		}
 		if (elec->GetExcitType()!=10)
 			continue;
 		if (prop->GetQtyPrimitives()!=1)

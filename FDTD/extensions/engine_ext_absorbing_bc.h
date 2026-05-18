@@ -23,6 +23,7 @@
 #include "FDTD/operator.h"
 #include "engine_extension_dispatcher.h"
 #include "tools/arraylib/array_ij.h"
+#include "tools/arraylib/array_ijk.h"
 
 class Operator_Ext_Absorbing_BC;
 
@@ -99,7 +100,22 @@ protected:
 	ArrayLib::ArrayIJ<FDTD_FLOAT>	m_I_nyP;	// Storage for currents, direction n + 1
 	ArrayLib::ArrayIJ<FDTD_FLOAT>	m_I_nyPP;	// Storage for currents, direction n + 2
 
+	// ---- CPML auxiliary state ----
+	// Indexed as (i_along_nyP, j_along_nyPP, k_depth_into_PML).
+	// k=0 is the inner edge (cell at the sheet position), k=Depth-1 is the
+	// outer edge against the simulation boundary.
+	ArrayLib::ArrayIJK<FDTD_FLOAT>	m_psi_V_nyP;
+	ArrayLib::ArrayIJK<FDTD_FLOAT>	m_psi_V_nyPP;
+	ArrayLib::ArrayIJK<FDTD_FLOAT>	m_psi_I_nyP;
+	ArrayLib::ArrayIJK<FDTD_FLOAT>	m_psi_I_nyPP;
 
+	int          m_pmlStepSign;     // +1 or -1: direction sheet → outer edge along m_ny
+	unsigned int m_pmlDepth;        // == operator's m_pmlDepth
+
+	template <typename EngType>
+	void ApplyCPMLVoltageUpdateImpl(EngType* eng, int threadID);
+	template <typename EngType>
+	void ApplyCPMLCurrentUpdateImpl(EngType* eng, int threadID);
 };
 
 #endif // ENGINE_EXT_ABSORBING_BC_H

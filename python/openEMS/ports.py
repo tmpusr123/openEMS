@@ -527,13 +527,13 @@ class WaveguidePort(Port):
                 WaveImpedance=z_wave,
                 EModeFileName=self.E_file,
                 HModeFileName=self.H_file,
-                UseModalFDTD=True, N1D=20000)
+                UseModalFDTD=False, N1D=20000)
             ma.AddBox(abs_start.tolist(), abs_stop.tolist(), priority=self.priority)
             self.port_props.append(ma)
 
     def CalcPort(self, sim_path, freq, ref_impedance=None, ref_plane_shift=None, signal_type='pulse', ZL = -1):
         k = 2.0*np.pi*freq/C0*self.ref_index
-        self.beta = np.sqrt(k**2 - self.kc**2)
+        self.beta = np.sqrt(np.asarray(k**2 - self.kc**2, dtype=complex))
         if ZL <= 0:
             self.ZL = k * Z0 / self.beta    #analytic waveguide impedance
         else:

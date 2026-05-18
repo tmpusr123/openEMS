@@ -18,6 +18,8 @@
 #include "engine_ext_excitation.h"
 #include "operator_ext_excitation.h"
 #include "FDTD/engine_sse.h"
+#include <cstdlib>
+#include <string>
 
 Engine_Ext_Excitation::Engine_Ext_Excitation(Operator_Ext_Excitation* op_ext) : Engine_Extension(op_ext)
 {
@@ -55,7 +57,19 @@ void Engine_Ext_Excitation::Apply2VoltagesImpl(EngType* eng)
 		pos[0]=m_Op_Exc->Volt_index[0][n];
 		pos[1]=m_Op_Exc->Volt_index[1][n];
 		pos[2]=m_Op_Exc->Volt_index[2][n];
-		eng->EngType::SetVolt(ny,pos, eng->EngType::GetVolt(ny,pos) + m_Op_Exc->Volt_amp[n]*exc_volt[exc_pos]);
+		// 2026-05-11 Phase L: Hard voltage excitation option.
+		// Default: soft (Volt += amplitude·signal) — bidirectional emission.
+		// Hard (EXC_HARD_VOLT=1): Volt = amplitude·signal — unidirectional source
+		// (no backward emission).  This eliminates the ~40% energy leak BEHIND
+		// port 1 observed in E-field analysis when using matched-modal-source.
+		static const bool s_hard_volt =
+			std::getenv("EXC_HARD_VOLT") != nullptr &&
+			std::string(std::getenv("EXC_HARD_VOLT")) == "1";
+		if (s_hard_volt) {
+			eng->EngType::SetVolt(ny,pos, m_Op_Exc->Volt_amp[n]*exc_volt[exc_pos]);
+		} else {
+			eng->EngType::SetVolt(ny,pos, eng->EngType::GetVolt(ny,pos) + m_Op_Exc->Volt_amp[n]*exc_volt[exc_pos]);
+		}
 	}
 }
 

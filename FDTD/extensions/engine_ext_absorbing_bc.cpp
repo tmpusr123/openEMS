@@ -37,6 +37,42 @@
 #include "tools/useful.h"
 #include "operator_ext_excitation.h"
 
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+
+namespace
+{
+	// Runtime A/B test knobs — read once on first call to keep hot path tight.
+	// Export CPML_DISABLE_PSI=1 to zero the ψ feedback (κ-only PML). Export
+	// CPML_DISABLE_KAP=1 to drop the (1/κ−1) stretch term (ψ-only).  These
+	// help isolate which half of the CFS-CPML correction is misbehaving.
+	struct CpmlDiagFlags
+	{
+		bool disable_psi;
+		bool disable_kap;
+		bool warn_nonfinite;
+		CpmlDiagFlags()
+		{
+			const char* p = std::getenv("CPML_DISABLE_PSI");
+			disable_psi = (p != nullptr && p[0] == '1');
+			const char* k = std::getenv("CPML_DISABLE_KAP");
+			disable_kap = (k != nullptr && k[0] == '1');
+			const char* w = std::getenv("CPML_WARN_NONFINITE");
+			warn_nonfinite = (w == nullptr || w[0] != '0'); // default ON
+			std::cerr << "[CPML-FLAGS] disable_psi=" << (disable_psi ? 1 : 0)
+			          << " disable_kap=" << (disable_kap ? 1 : 0)
+			          << " warn_nonfinite=" << (warn_nonfinite ? 1 : 0)
+			          << std::endl;
+		}
+	};
+	const CpmlDiagFlags& cpml_flags()
+	{
+		static CpmlDiagFlags f;
+		return f;
+	}
+}
+
 Engine_Ext_Absorbing_BC::Engine_Ext_Absorbing_BC(Operator_Ext_Absorbing_BC* op_ext) :
 	Engine_Extension(op_ext),
 	m_K1_nyP(op_ext->m_K1_nyP),
@@ -77,6 +113,30 @@ Engine_Ext_Absorbing_BC::Engine_Ext_Absorbing_BC(Operator_Ext_Absorbing_BC* op_e
 	m_I_nyP.Init("curr_nyP",m_numLines);
 	m_I_nyPP.Init("curr_nyPP",m_numLines);
 
+	m_pmlDepth    = m_Op_ABC->m_pmlDepth;
+	m_pmlStepSign = m_Op_ABC->m_pmlStepSign;
+
+	if (m_ABCtype == int(Operator_Ext_Absorbing_BC::CPML))
+	{
+		// 3D state, indexed (i_nyP, j_nyPP, k_depth).
+		unsigned int psi_extent[3] = {m_numLines[0], m_numLines[1], m_pmlDepth};
+		m_psi_V_nyP .Init("psi_V_nyP" , psi_extent);
+		m_psi_V_nyPP.Init("psi_V_nyPP", psi_extent);
+		m_psi_I_nyP .Init("psi_I_nyP" , psi_extent);
+		m_psi_I_nyPP.Init("psi_I_nyPP", psi_extent);
+		// ArrayIJK::Init does not zero memory; explicit zero so the recursive
+		// convolution accumulator starts cleanly.
+		for (unsigned int i = 0; i < m_numLines[0]; ++i)
+		for (unsigned int j = 0; j < m_numLines[1]; ++j)
+		for (unsigned int k = 0; k < m_pmlDepth;   ++k)
+		{
+			m_psi_V_nyP (i, j, k) = 0;
+			m_psi_V_nyPP(i, j, k) = 0;
+			m_psi_I_nyP (i, j, k) = 0;
+			m_psi_I_nyPP(i, j, k) = 0;
+		}
+	}
+
 	// One thread per boundary
 	SetNumberOfThreads(1);
 }
@@ -113,6 +173,10 @@ void Engine_Ext_Absorbing_BC::DoPreVoltageUpdatesImpl(EngType* eng, int threadID
 	if (m_Eng==NULL) return;
 
 	if (threadID >= m_NrThreads)
+		return;
+
+	// CPML does its work entirely in DoPostVoltageUpdates.
+	if (m_ABCtype == int(Operator_Ext_Absorbing_BC::CPML))
 		return;
 
 	unsigned int pos[] = {0,0,0};
@@ -152,6 +216,12 @@ void Engine_Ext_Absorbing_BC::DoPostVoltageUpdatesImpl(EngType* eng, int threadI
 	if (threadID >= m_NrThreads)
 		return;
 
+	if (m_ABCtype == int(Operator_Ext_Absorbing_BC::CPML))
+	{
+		ApplyCPMLVoltageUpdateImpl<EngType>(eng, threadID);
+		return;
+	}
+
 	unsigned int pos_shift[] = {0,0,0};
 
 	pos_shift[m_ny] = m_pos_ny0_shift_V;
@@ -188,6 +258,10 @@ void Engine_Ext_Absorbing_BC::Apply2VoltagesImpl(EngType* eng, int threadID)
 	if (threadID >= m_NrThreads)
 		return;
 
+	// CPML applied its V correction in DoPostVoltageUpdates already.
+	if (m_ABCtype == int(Operator_Ext_Absorbing_BC::CPML))
+		return;
+
 	unsigned int pos[] = {0,0,0};
 
 	pos[m_ny] = m_posStart[m_ny];
@@ -221,6 +295,10 @@ void Engine_Ext_Absorbing_BC::DoPreCurrentUpdatesImpl(EngType* eng, int threadID
 	if (m_Eng==NULL) return;
 
 	if (threadID >= m_NrThreads)
+		return;
+
+	// CPML does its work in DoPostCurrentUpdates.
+	if (m_ABCtype == int(Operator_Ext_Absorbing_BC::CPML))
 		return;
 
 	unsigned int 	pos[] = {0,0,0},
@@ -283,6 +361,12 @@ void Engine_Ext_Absorbing_BC::DoPostCurrentUpdatesImpl(EngType* eng, int threadI
 	if (threadID >= m_NrThreads)
 		return;
 
+	if (m_ABCtype == int(Operator_Ext_Absorbing_BC::CPML))
+	{
+		ApplyCPMLCurrentUpdateImpl<EngType>(eng, threadID);
+		return;
+	}
+
 	unsigned int pos_shift[] = {0,0,0};
 
 	// If this isn't the appropriate boundary type, move on to the next primitive
@@ -328,6 +412,10 @@ void Engine_Ext_Absorbing_BC::Apply2CurrentImpl(EngType* eng, int threadID)
 	if (threadID >= m_NrThreads)
 		return;
 
+	// CPML applied its I correction in DoPostCurrentUpdates already.
+	if (m_ABCtype == int(Operator_Ext_Absorbing_BC::CPML))
+		return;
+
 	unsigned int pos[] = {0,0,0};
 
 	// If this isn't the appropriate boundary type, move on to the next primitive
@@ -363,4 +451,314 @@ void Engine_Ext_Absorbing_BC::Apply2CurrentImpl(EngType* eng, int threadID)
 void Engine_Ext_Absorbing_BC::Apply2Current(int threadID)
 {
 	ENG_DISPATCH_ARGS(Apply2CurrentImpl, threadID);
+}
+
+// ---------------------------------------------------------------------------
+// CFS-CPML strip update (kappa = 1 simplification).
+//
+// At this point in the time step:
+//   * Volt has just been updated to V[n+1/2] using the standard FIT formula
+//   * Curr is still at I[n] (the curl source the engine just used)
+// We compute the m_ny-axis backward difference of I exactly as the engine
+// did, push it through the recursive memory variable psi_V (one per cell per
+// transverse component), and add psi_V to the freshly-updated V. The
+// per-cell coefficients m_pml_cv_* already include sigma/(sigma+alpha)*(b-1)
+// and the local vi with the correct sign baked in.
+// ---------------------------------------------------------------------------
+
+template <typename EngType>
+void Engine_Ext_Absorbing_BC::ApplyCPMLVoltageUpdateImpl(EngType* eng, int threadID)
+{
+	const unsigned int i_start = m_threadStartLine.at(threadID);
+	const unsigned int i_stop  = i_start + m_linesPerThread.at(threadID);
+
+	// [CPML-DIAG] gating: print every PRINT_EVERY steps for the first
+	// PRINT_EARLY_FIRST steps (early transient), then sparsely afterwards.
+	// Diagnostic is per-thread; only thread 0 prints to avoid flooding.
+	const unsigned int ts = m_Eng ? m_Eng->GetNumberOfTimesteps() : 0;
+	const bool print_step = (threadID == 0) && (
+	    (ts < 30) ||                       // first 30 steps verbatim
+	    (ts < 300 && (ts % 10) == 0) ||    // every 10 up to 300
+	    ((ts % 200) == 0));                // then every 200
+	const unsigned int i_mid = m_numLines[0] / 2;
+	const unsigned int j_mid = m_numLines[1] / 2;
+	const CpmlDiagFlags& flags = cpml_flags();
+
+	// Accumulators for this voltage half-step (PML region only).
+	double sum_psi_V_sq = 0.0;
+	double sum_V_sq     = 0.0;
+	double sum_diff_sq  = 0.0;
+	double max_psi_V    = 0.0;
+	double max_V        = 0.0;
+
+	unsigned int pos[3];
+	unsigned int pos_back[3];
+
+	for (unsigned int i = i_start; i < i_stop; ++i)
+	{
+		pos[m_nyP] = pos_back[m_nyP] = m_posStart[m_nyP] + i;
+		for (unsigned int j = 0; j < m_numLines[1]; ++j)
+		{
+			pos[m_nyPP] = pos_back[m_nyPP] = m_posStart[m_nyPP] + j;
+			for (unsigned int k = 0; k < m_pmlDepth; ++k)
+			{
+				const int p_ny = (int)m_posStart[m_ny] + m_pmlStepSign * (int)k;
+				pos[m_ny] = (unsigned int)p_ny;
+
+				// Engine uses pos[m_ny]-1 as the backward neighbour, regardless
+				// of which face the strip is on.  CPML must read the SAME diff
+				// the engine used so the κ correction (1/κ-1)·diff coherently
+				// modifies the engine's curl.
+				if (p_ny <= 0)
+					pos_back[m_ny] = (unsigned int)p_ny;
+				else
+					pos_back[m_ny] = (unsigned int)(p_ny - 1);
+
+				const bool is_corner = (i == i_start && j == 0);
+				const bool is_mid    = (i == i_mid && j == j_mid);
+				const bool is_spot   = (is_corner || is_mid)
+				                       && (k == 0 || k == m_pmlDepth - 1);
+
+				// V[m_nyP] update: m_ny-curl term involves curr(m_nyPP, ...).
+				const FDTD_FLOAT diff_P =
+					eng->EngType::GetCurr(m_nyPP, pos)
+					- eng->EngType::GetCurr(m_nyPP, pos_back);
+
+				const FDTD_FLOAT V_P_before  = eng->EngType::GetVolt(m_nyP, pos);
+				const FDTD_FLOAT psi_P_old   = m_psi_V_nyP(i, j, k);
+				const FDTD_FLOAT psi_P_decay = (FDTD_FLOAT)m_Op_ABC->m_pml_b_z[k] * psi_P_old;
+				const FDTD_FLOAT psi_P_drive = m_Op_ABC->m_pml_cv_nyP(i, j, k) * diff_P;
+				const FDTD_FLOAT psi_P_new   = psi_P_decay + psi_P_drive;
+				m_psi_V_nyP(i, j, k) = psi_P_new;
+
+				const FDTD_FLOAT kap_term_P_raw = m_Op_ABC->m_pml_kapV_nyP(i, j, k) * diff_P;
+				const FDTD_FLOAT kap_term_P  = flags.disable_kap ? (FDTD_FLOAT)0 : kap_term_P_raw;
+				const FDTD_FLOAT psi_term_P  = flags.disable_psi ? (FDTD_FLOAT)0 : psi_P_new;
+				const FDTD_FLOAT V_P_after   = V_P_before + kap_term_P + psi_term_P;
+				eng->EngType::SetVolt(m_nyP, pos, V_P_after);
+
+				// V[m_nyPP] update: m_ny-curl term involves curr(m_nyP, ...).
+				const FDTD_FLOAT diff_PP =
+					eng->EngType::GetCurr(m_nyP, pos)
+					- eng->EngType::GetCurr(m_nyP, pos_back);
+
+				const FDTD_FLOAT V_PP_before  = eng->EngType::GetVolt(m_nyPP, pos);
+				const FDTD_FLOAT psi_PP_old   = m_psi_V_nyPP(i, j, k);
+				const FDTD_FLOAT psi_PP_decay = (FDTD_FLOAT)m_Op_ABC->m_pml_b_z[k] * psi_PP_old;
+				const FDTD_FLOAT psi_PP_drive = m_Op_ABC->m_pml_cv_nyPP(i, j, k) * diff_PP;
+				const FDTD_FLOAT psi_PP_new   = psi_PP_decay + psi_PP_drive;
+				m_psi_V_nyPP(i, j, k) = psi_PP_new;
+
+				const FDTD_FLOAT kap_term_PP_raw = m_Op_ABC->m_pml_kapV_nyPP(i, j, k) * diff_PP;
+				const FDTD_FLOAT kap_term_PP = flags.disable_kap ? (FDTD_FLOAT)0 : kap_term_PP_raw;
+				const FDTD_FLOAT psi_term_PP = flags.disable_psi ? (FDTD_FLOAT)0 : psi_PP_new;
+				const FDTD_FLOAT V_PP_after  = V_PP_before + kap_term_PP + psi_term_PP;
+				eng->EngType::SetVolt(m_nyPP, pos, V_PP_after);
+
+				// --- accumulators (per-thread slice, k spans full depth) ---
+				sum_psi_V_sq += (double)psi_P_new  * (double)psi_P_new
+				             +  (double)psi_PP_new * (double)psi_PP_new;
+				sum_V_sq     += (double)V_P_after  * (double)V_P_after
+				             +  (double)V_PP_after * (double)V_PP_after;
+				sum_diff_sq  += (double)diff_P  * (double)diff_P
+				             +  (double)diff_PP * (double)diff_PP;
+				if (std::fabs((double)psi_P_new ) > max_psi_V) max_psi_V = std::fabs((double)psi_P_new);
+				if (std::fabs((double)psi_PP_new) > max_psi_V) max_psi_V = std::fabs((double)psi_PP_new);
+				if (std::fabs((double)V_P_after ) > max_V    ) max_V     = std::fabs((double)V_P_after);
+				if (std::fabs((double)V_PP_after) > max_V    ) max_V     = std::fabs((double)V_PP_after);
+
+				// --- per-cell spot-check print ---
+				if (print_step && is_spot)
+				{
+					const char* loc = is_corner ? "C" : "M";
+					const char* edg = (k == 0) ? "I" : "O";
+					std::cerr << "[CPML-V] ts=" << ts
+					          << " " << edg << "/" << loc
+					          << " ijk=(" << i << "," << j << "," << k << ")"
+					          << " pos_ny=" << pos[m_ny]
+					          << " back_ny=" << pos_back[m_ny]
+					          << " | dP=" << diff_P
+					          << " psi_P[old=" << psi_P_old
+					          << " dec=" << psi_P_decay
+					          << " drv=" << psi_P_drive
+					          << " new=" << psi_P_new << "]"
+					          << " kap_P=" << kap_term_P
+					          << " V_P[" << V_P_before << "->" << V_P_after << "]"
+					          << " | dPP=" << diff_PP
+					          << " psi_PP_new=" << psi_PP_new
+					          << " V_PP[" << V_PP_before << "->" << V_PP_after << "]"
+					          << std::endl;
+				}
+			}
+		}
+	}
+
+	// --- per-step summary across this thread's PML region ---
+	if (print_step)
+	{
+		std::cerr << "[CPML-V-SUM] ts=" << ts
+		          << " thr=" << threadID
+		          << " sum_psi2=" << sum_psi_V_sq
+		          << " sum_V2=" << sum_V_sq
+		          << " sum_dI2=" << sum_diff_sq
+		          << " max_psi=" << max_psi_V
+		          << " max_V=" << max_V
+		          << std::endl;
+	}
+
+	// --- nonfinite watchdog (always on; cheap because we already have maxima) ---
+	if (flags.warn_nonfinite && threadID == 0
+	    && (!std::isfinite(max_psi_V) || !std::isfinite(max_V)))
+	{
+		std::cerr << "[CPML-V-NAN] ts=" << ts
+		          << " max_psi=" << max_psi_V
+		          << " max_V=" << max_V
+		          << " (non-finite detected!)" << std::endl;
+	}
+}
+
+template <typename EngType>
+void Engine_Ext_Absorbing_BC::ApplyCPMLCurrentUpdateImpl(EngType* eng, int threadID)
+{
+	// Currents live on the dual grid: the engine uses pos[m_ny]+1 (forward
+	// neighbour). At the trailing boundary the engine bounds the loop at
+	// numLines-1, so we mirror that by skipping cells where pos[m_ny]+1 is
+	// out of range.
+	const unsigned int i_stop = std::min(
+		m_threadStartLine.at(threadID) + m_linesPerThread.at(threadID),
+		m_numLines[0] - 1);
+	const unsigned int i_start = m_threadStartLine.at(threadID);
+
+	const unsigned int n_lines_ny = m_Op_ABC->m_Op->GetNumberOfLines(m_ny, true);
+
+	const unsigned int ts = m_Eng ? m_Eng->GetNumberOfTimesteps() : 0;
+	const bool print_step = (threadID == 0) && (
+	    (ts < 30) ||
+	    (ts < 300 && (ts % 10) == 0) ||
+	    ((ts % 200) == 0));
+	const unsigned int i_mid = m_numLines[0] / 2;
+	const unsigned int j_mid = m_numLines[1] / 2;
+	const CpmlDiagFlags& flags = cpml_flags();
+
+	double sum_psi_I_sq = 0.0;
+	double sum_I_sq     = 0.0;
+	double sum_diff_sq  = 0.0;
+	double max_psi_I    = 0.0;
+	double max_I        = 0.0;
+
+	unsigned int pos[3];
+	unsigned int pos_fwd[3];
+
+	for (unsigned int i = i_start; i < i_stop; ++i)
+	{
+		pos[m_nyP] = pos_fwd[m_nyP] = m_posStart[m_nyP] + i;
+		for (unsigned int j = 0; j + 1 < m_numLines[1]; ++j)
+		{
+			pos[m_nyPP] = pos_fwd[m_nyPP] = m_posStart[m_nyPP] + j;
+			for (unsigned int k = 0; k < m_pmlDepth; ++k)
+			{
+				const int p_ny = (int)m_posStart[m_ny] + m_pmlStepSign * (int)k;
+				pos[m_ny] = (unsigned int)p_ny;
+				if (p_ny + 1 >= (int)n_lines_ny)
+					pos_fwd[m_ny] = (unsigned int)p_ny;     // engine pins forward to self
+				else
+					pos_fwd[m_ny] = (unsigned int)(p_ny + 1);
+
+				const bool is_corner = (i == i_start && j == 0);
+				const bool is_mid    = (i == i_mid && j == j_mid);
+				const bool is_spot   = (is_corner || is_mid)
+				                       && (k == 0 || k == m_pmlDepth - 1);
+
+				// I[m_nyP] m_ny-term involves volt(m_nyPP, pos+e_ny).
+				const FDTD_FLOAT diff_P =
+					eng->EngType::GetVolt(m_nyPP, pos_fwd)
+					- eng->EngType::GetVolt(m_nyPP, pos);
+
+				const FDTD_FLOAT I_P_before  = eng->EngType::GetCurr(m_nyP, pos);
+				const FDTD_FLOAT psi_P_old   = m_psi_I_nyP(i, j, k);
+				const FDTD_FLOAT psi_P_decay = (FDTD_FLOAT)m_Op_ABC->m_pml_b_z[k] * psi_P_old;
+				const FDTD_FLOAT psi_P_drive = m_Op_ABC->m_pml_ci_nyP(i, j, k) * diff_P;
+				const FDTD_FLOAT psi_P_new   = psi_P_decay + psi_P_drive;
+				m_psi_I_nyP(i, j, k) = psi_P_new;
+
+				const FDTD_FLOAT kap_term_P_raw = m_Op_ABC->m_pml_kapI_nyP(i, j, k) * diff_P;
+				const FDTD_FLOAT kap_term_P  = flags.disable_kap ? (FDTD_FLOAT)0 : kap_term_P_raw;
+				const FDTD_FLOAT psi_term_P  = flags.disable_psi ? (FDTD_FLOAT)0 : psi_P_new;
+				const FDTD_FLOAT I_P_after   = I_P_before + kap_term_P + psi_term_P;
+				eng->EngType::SetCurr(m_nyP, pos, I_P_after);
+
+				// I[m_nyPP] m_ny-term involves volt(m_nyP, pos+e_ny).
+				const FDTD_FLOAT diff_PP =
+					eng->EngType::GetVolt(m_nyP, pos_fwd)
+					- eng->EngType::GetVolt(m_nyP, pos);
+
+				const FDTD_FLOAT I_PP_before  = eng->EngType::GetCurr(m_nyPP, pos);
+				const FDTD_FLOAT psi_PP_old   = m_psi_I_nyPP(i, j, k);
+				const FDTD_FLOAT psi_PP_decay = (FDTD_FLOAT)m_Op_ABC->m_pml_b_z[k] * psi_PP_old;
+				const FDTD_FLOAT psi_PP_drive = m_Op_ABC->m_pml_ci_nyPP(i, j, k) * diff_PP;
+				const FDTD_FLOAT psi_PP_new   = psi_PP_decay + psi_PP_drive;
+				m_psi_I_nyPP(i, j, k) = psi_PP_new;
+
+				const FDTD_FLOAT kap_term_PP_raw = m_Op_ABC->m_pml_kapI_nyPP(i, j, k) * diff_PP;
+				const FDTD_FLOAT kap_term_PP = flags.disable_kap ? (FDTD_FLOAT)0 : kap_term_PP_raw;
+				const FDTD_FLOAT psi_term_PP = flags.disable_psi ? (FDTD_FLOAT)0 : psi_PP_new;
+				const FDTD_FLOAT I_PP_after  = I_PP_before + kap_term_PP + psi_term_PP;
+				eng->EngType::SetCurr(m_nyPP, pos, I_PP_after);
+
+				sum_psi_I_sq += (double)psi_P_new  * (double)psi_P_new
+				             +  (double)psi_PP_new * (double)psi_PP_new;
+				sum_I_sq     += (double)I_P_after  * (double)I_P_after
+				             +  (double)I_PP_after * (double)I_PP_after;
+				sum_diff_sq  += (double)diff_P  * (double)diff_P
+				             +  (double)diff_PP * (double)diff_PP;
+				if (std::fabs((double)psi_P_new ) > max_psi_I) max_psi_I = std::fabs((double)psi_P_new);
+				if (std::fabs((double)psi_PP_new) > max_psi_I) max_psi_I = std::fabs((double)psi_PP_new);
+				if (std::fabs((double)I_P_after ) > max_I    ) max_I     = std::fabs((double)I_P_after);
+				if (std::fabs((double)I_PP_after) > max_I    ) max_I     = std::fabs((double)I_PP_after);
+
+				if (print_step && is_spot)
+				{
+					const char* loc = is_corner ? "C" : "M";
+					const char* edg = (k == 0) ? "I" : "O";
+					std::cerr << "[CPML-I] ts=" << ts
+					          << " " << edg << "/" << loc
+					          << " ijk=(" << i << "," << j << "," << k << ")"
+					          << " pos_ny=" << pos[m_ny]
+					          << " fwd_ny=" << pos_fwd[m_ny]
+					          << " | dP=" << diff_P
+					          << " psi_P[old=" << psi_P_old
+					          << " dec=" << psi_P_decay
+					          << " drv=" << psi_P_drive
+					          << " new=" << psi_P_new << "]"
+					          << " kap_P=" << kap_term_P
+					          << " I_P[" << I_P_before << "->" << I_P_after << "]"
+					          << " | dPP=" << diff_PP
+					          << " psi_PP_new=" << psi_PP_new
+					          << " I_PP[" << I_PP_before << "->" << I_PP_after << "]"
+					          << std::endl;
+				}
+			}
+		}
+	}
+
+	if (print_step)
+	{
+		std::cerr << "[CPML-I-SUM] ts=" << ts
+		          << " thr=" << threadID
+		          << " sum_psi2=" << sum_psi_I_sq
+		          << " sum_I2=" << sum_I_sq
+		          << " sum_dV2=" << sum_diff_sq
+		          << " max_psi=" << max_psi_I
+		          << " max_I=" << max_I
+		          << std::endl;
+	}
+
+	if (flags.warn_nonfinite && threadID == 0
+	    && (!std::isfinite(max_psi_I) || !std::isfinite(max_I)))
+	{
+		std::cerr << "[CPML-I-NAN] ts=" << ts
+		          << " max_psi=" << max_psi_I
+		          << " max_I=" << max_I
+		          << " (non-finite detected!)" << std::endl;
+	}
 }
