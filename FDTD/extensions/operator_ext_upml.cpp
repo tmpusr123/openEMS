@@ -152,7 +152,7 @@ bool Operator_Ext_UPML::Create_UPML(Operator* op, const int ui_BC[6], const unsi
 
 	//create a pml in y-direction over the xz-space (if a pml in x-direction already exists, skip that corner regions)
 	start[0]=(size[0]+1)*(BC[0]==3);
-	stop[0] =op->GetNumberOfLines(0,true)-1-(size[0]+1)*(BC[1]==3);
+	stop[0] =op->GetNumberOfLines(0,true)-1-(size[1]+1)*(BC[1]==3);
 
 	if (BC[2]==3)
 	{
@@ -316,7 +316,7 @@ void Operator_Ext_UPML::CalcGradingKappa(int ny, unsigned int pos[3], double Zm,
 
 			if (n==ny)
 				depth+=m_Op->GetEdgeLength(n,pos)/2;
-			double vars[5] = {depth, width/(m_Size[2*n]), width, Zm, (double)m_Size[2*n]};
+			double vars[5] = {depth, width/(m_Size[2*n+1]), width, Zm, (double)m_Size[2*n+1]};
 			if (depth>0)
 				kappa_v[n] = m_GradingFunction->Eval(vars);
 			else
