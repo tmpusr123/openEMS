@@ -27,6 +27,9 @@ cdef extern from "openEMS/nf2ff.h":
 
         bool AnalyseFile(string E_Field_file, string H_Field_file) nogil
 
+        void SetCacheEnabled(bool enable)
+        bool RecomputeForAngles(vector[float] theta, vector[float] phi) nogil
+
         void SetRadius(float radius)
         void SetPermittivity(vector[float] permittivity);
         void SetPermeability(vector[float] permeability);

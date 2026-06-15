@@ -40,6 +40,20 @@ using namespace std;
 class TiXmlElement;
 class nf2ff_calc;
 
+// One recorded Huygens-box plane, cached so the near-field read can be reused
+// across multiple far-field angle grids (read-once-compute-many). Holds deep
+// copies of the mesh lines and the per-frequency E/H frequency-domain field
+// arrays — pristine, because AddPlane() frees the fields it is given and
+// mutates the line arrays (mirror reflection), so each replay needs fresh copies.
+struct nf2ff_cached_plane
+{
+	float* lines[3];
+	unsigned int numLines[3];
+	int meshType;
+	vector<complex<float>****> E_fd; // one [3][nx][ny][nz] array per frequency
+	vector<complex<float>****> H_fd;
+};
+
 class NF2FF_EXPORT nf2ff
 {
 public:
@@ -47,6 +61,16 @@ public:
 	~nf2ff();
 
 	bool AnalyseFile(string E_Field_file, string H_Field_file);
+
+	//! Enable caching of read planes so RecomputeForAngles() can reuse them.
+	void SetCacheEnabled(bool enable) {m_cacheEnabled=enable;}
+
+	//! Recompute the far-field for a NEW (theta,phi) grid WITHOUT re-reading the
+	//! near-field files, reusing the planes cached during AnalyseFile(). The
+	//! near-field read (the dominant cost) is paid once; only the cheap
+	//! direction integration is repeated. Results are read via the usual
+	//! getters / Write2HDF5, exactly as after AnalyseFile().
+	bool RecomputeForAngles(vector<float> theta, vector<float> phi);
 
 	void SetRadius(float radius);
 	void SetPermittivity(vector<float> permittivity);
@@ -80,6 +104,16 @@ protected:
 	float m_radius;
 	int m_Verbose;
 	vector<nf2ff_calc*> m_nf2ff;
+
+	// --- read-once-compute-many support ---
+	vector<float> m_center;          // phase center, to recreate nf2ff_calc objects
+	unsigned int m_numThreads;       // thread count, to recreate nf2ff_calc objects
+	int m_MirrorType[3];             // mirror state, re-applied after recreate
+	float m_MirrorPos[3];
+	bool m_cacheEnabled;
+	vector<nf2ff_cached_plane> m_cachedPlanes;
+
+	void ClearCache();
 };
 
 #endif // NF2FF_H

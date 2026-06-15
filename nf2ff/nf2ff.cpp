@@ -36,6 +36,19 @@
 
 using namespace std;
 
+// Deep-copy a [3][nx][ny][nz] complex field array (read-once-compute-many).
+// Mirrors the Create_N_3DArray layout used throughout nf2ff_calc.
+static complex<float>**** copy_N_3DArray(complex<float>**** src, unsigned int* numLines)
+{
+	complex<float>**** dst = Create_N_3DArray<complex<float> >(numLines);
+	for (int c=0;c<3;++c)
+		for (unsigned int i=0;i<numLines[0];++i)
+			for (unsigned int j=0;j<numLines[1];++j)
+				for (unsigned int k=0;k<numLines[2];++k)
+					dst[c][i][j][k] = src[c][i][j][k];
+	return dst;
+}
+
 nf2ff::nf2ff(vector<float> freq, vector<float> theta, vector<float> phi, vector<float> center, unsigned int numThreads)
 {
 	setlocale(LC_NUMERIC, "en_US.UTF-8");
@@ -60,6 +73,12 @@ nf2ff::nf2ff(vector<float> freq, vector<float> theta, vector<float> phi, vector<
 	}
 	m_radius = 1;
 	m_Verbose = 0;
+
+	// read-once-compute-many state
+	m_center = center;
+	m_numThreads = numThreads;
+	for (int n=0;n<3;++n) { m_MirrorType[n]=0; m_MirrorPos[n]=0.0; }
+	m_cacheEnabled = false;
 }
 
 nf2ff::~nf2ff()
@@ -73,6 +92,8 @@ nf2ff::~nf2ff()
 	m_phi = NULL;
 	delete[] m_theta;
 	m_theta = NULL;
+
+	ClearCache();
 }
 
 void nf2ff::SetRadius(float radius)
@@ -130,6 +151,7 @@ void nf2ff::SetMirror(int type, int dir, float pos)
 {
 	if (m_Verbose>0)
 		cerr << "Enable mirror of type: "<< type << " in direction: " << dir << " at: " << pos << endl;
+	if (dir>=0 && dir<3) { m_MirrorType[dir]=type; m_MirrorPos[dir]=pos; }  // remember for RecomputeForAngles
 	for (size_t fn=0;fn<m_nf2ff.size();++fn)
 		m_nf2ff.at(fn)->SetMirror(type, dir, pos);
 }
@@ -391,6 +413,23 @@ bool nf2ff::AnalyseFile(string E_Field_file, string H_Field_file)
 	for (int n=0;n<3;++n)
 		delete[] H_lines[n];
 
+	// read-once-compute-many: begin caching this plane (mesh now, fields below).
+	// Deep copies because AddPlane() frees the field arrays and mutates lines.
+	nf2ff_cached_plane* cache_plane = NULL;
+	if (m_cacheEnabled)
+	{
+		m_cachedPlanes.push_back(nf2ff_cached_plane());
+		cache_plane = &m_cachedPlanes.back();
+		cache_plane->meshType = E_meshType;
+		for (int n=0;n<3;++n)
+		{
+			cache_plane->numLines[n] = E_numLines[n];
+			cache_plane->lines[n] = new float[E_numLines[n]];
+			for (unsigned int m=0;m<E_numLines[n];++m)
+				cache_plane->lines[n][m] = E_lines[n][m];
+		}
+	}
+
 	if (m_Verbose>0)
 		cerr << "nf2ff: Data-Size: " << E_numLines[0] << "x" << E_numLines[1] << "x"  << E_numLines[2] << endl;
 
@@ -501,6 +540,11 @@ bool nf2ff::AnalyseFile(string E_Field_file, string H_Field_file)
 		{
 			if (m_Verbose>1)
 				cerr << "nf2ff: f = " << m_freq.at(fn) << "Hz (" << fn+1 << "/" << m_freq.size() << ") ...";
+			if (cache_plane)
+			{
+				cache_plane->E_fd.push_back(copy_N_3DArray(E_fd_data.at(fn), E_numLines));
+				cache_plane->H_fd.push_back(copy_N_3DArray(H_fd_data.at(fn), E_numLines));
+			}
 			m_nf2ff.at(fn)->AddPlane(E_lines, E_numLines, E_fd_data.at(fn), H_fd_data.at(fn),E_meshType);
 			if (m_Verbose>1)
 				cerr << " done." << endl;
@@ -548,6 +592,11 @@ bool nf2ff::AnalyseFile(string E_Field_file, string H_Field_file)
 			}
 			if (m_Verbose>1)
 				cerr << "nf2ff: f = " << m_freq.at(n) << "Hz (" << n+1 << "/" << m_freq.size() << ") ...";
+			if (cache_plane)
+			{
+				cache_plane->E_fd.push_back(copy_N_3DArray(E_fd_data, E_numLines));
+				cache_plane->H_fd.push_back(copy_N_3DArray(H_fd_data, E_numLines));
+			}
 			m_nf2ff.at(n)->AddPlane(E_lines, E_numLines, E_fd_data, H_fd_data,E_meshType);
 			if (m_Verbose>1)
 				cerr << " done." << endl;
@@ -557,6 +606,82 @@ bool nf2ff::AnalyseFile(string E_Field_file, string H_Field_file)
 	for (int n=0;n<3;++n)
 		delete[] E_lines[n];
 
+	return true;
+}
+
+void nf2ff::ClearCache()
+{
+	for (size_t p=0;p<m_cachedPlanes.size();++p)
+	{
+		nf2ff_cached_plane& cp = m_cachedPlanes[p];
+		for (int n=0;n<3;++n)
+			delete[] cp.lines[n];
+		for (size_t fn=0;fn<cp.E_fd.size();++fn)
+			Delete_N_3DArray<complex<float> >(cp.E_fd[fn], cp.numLines);
+		for (size_t fn=0;fn<cp.H_fd.size();++fn)
+			Delete_N_3DArray<complex<float> >(cp.H_fd[fn], cp.numLines);
+	}
+	m_cachedPlanes.clear();
+}
+
+bool nf2ff::RecomputeForAngles(vector<float> theta, vector<float> phi)
+{
+	if (m_cachedPlanes.empty())
+	{
+		cerr << "nf2ff::RecomputeForAngles: no cached planes "
+		        "(call SetCacheEnabled(true) before AnalyseFile)" << endl;
+		return false;
+	}
+
+	// swap in the new angle grid
+	delete[] m_theta;
+	delete[] m_phi;
+	m_numTheta = theta.size();
+	m_theta = new float[m_numTheta];
+	for (size_t n=0;n<m_numTheta;++n) m_theta[n]=theta.at(n);
+	m_numPhi = phi.size();
+	m_phi = new float[m_numPhi];
+	for (size_t n=0;n<m_numPhi;++n) m_phi[n]=phi.at(n);
+
+	// recreate the per-frequency calc objects with the new angle grid (this
+	// re-allocates and zeroes the Nt/Np/Lt/Lp accumulators); restore the
+	// radius / mirror / material state that was applied before AnalyseFile
+	for (size_t fn=0;fn<m_nf2ff.size();++fn)
+		delete m_nf2ff.at(fn);
+	for (size_t fn=0;fn<m_freq.size();++fn)
+	{
+		m_nf2ff.at(fn) = new nf2ff_calc(m_freq.at(fn), theta, phi, m_center);
+		if (m_numThreads)
+			m_nf2ff.at(fn)->SetNumThreads(m_numThreads);
+		m_nf2ff.at(fn)->SetRadius(m_radius);
+		for (int d=0;d<3;++d)
+			if (m_MirrorType[d]!=0)
+				m_nf2ff.at(fn)->SetMirror(m_MirrorType[d], d, m_MirrorPos[d]);
+	}
+	if (m_permittivity.size()) SetPermittivity(m_permittivity);
+	if (m_permeability.size()) SetPermeability(m_permeability);
+
+	// replay the integration on the cached near-field — no file re-read.
+	// AddPlane frees the fields and mutates lines, so hand it fresh copies.
+	for (size_t p=0;p<m_cachedPlanes.size();++p)
+	{
+		nf2ff_cached_plane& cp = m_cachedPlanes[p];
+		for (size_t fn=0;fn<m_freq.size() && fn<cp.E_fd.size();++fn)
+		{
+			float* lines[3];
+			for (int n=0;n<3;++n)
+			{
+				lines[n] = new float[cp.numLines[n]];
+				for (unsigned int m=0;m<cp.numLines[n];++m)
+					lines[n][m] = cp.lines[n][m];
+			}
+			complex<float>**** E = copy_N_3DArray(cp.E_fd[fn], cp.numLines);
+			complex<float>**** H = copy_N_3DArray(cp.H_fd[fn], cp.numLines);
+			m_nf2ff.at(fn)->AddPlane(lines, cp.numLines, E, H, cp.meshType);
+			for (int n=0;n<3;++n)
+				delete[] lines[n];
+		}
+	}
 	return true;
 }
 

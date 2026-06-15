@@ -18,6 +18,7 @@
 #
 
 cimport openEMS._nf2ff
+from libcpp.vector cimport vector
 import numpy as np
 import os
 from CSXCAD.Utilities import CheckNyDir
@@ -47,6 +48,21 @@ cdef class _nf2ff:
         cdef string h_fn = h_file.encode('UTF-8')
         with nogil:
             ok = self.thisptr.AnalyseFile(e_fn, h_fn)
+        return ok
+
+    def SetCacheEnabled(self, enable):
+        # Cache read planes so RecomputeForAngles() can reuse the near-field
+        # read across multiple far-field angle grids (read-once-compute-many).
+        self.thisptr.SetCacheEnabled(<bint>enable)
+
+    def RecomputeForAngles(self, theta, phi):
+        # Recompute the far-field for a NEW (theta,phi) grid WITHOUT re-reading
+        # the near-field files (reuses the cached planes). Results are read with
+        # the same getters / Write2HDF5 as after AnalyseFile().
+        cdef vector[float] _theta = theta
+        cdef vector[float] _phi = phi
+        with nogil:
+            ok = self.thisptr.RecomputeForAngles(_theta, _phi)
         return ok
 
     def SetMirror(self, mirr_type, ny, pos):
