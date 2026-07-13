@@ -86,6 +86,21 @@ protected:
 	FDTD_FLOAT *d_mur_nyPP = NULL;
 	FDTD_FLOAT *d_volt_nyP = NULL;   // device aux boundary voltages (W0*W1)
 	FDTD_FLOAT *d_volt_nyPP = NULL;
+
+	// multi-GPU: this face clipped to each slab's x-range. x-normal faces live
+	// wholly on the first/last slab; y/z-normal faces have their x face-axis
+	// clipped per slab (coeff slices + per-slab aux state). All reads (face
+	// line + inner line) stay within the owning slab, so no halo coupling.
+	void SetEngineMg(class Engine_cuda_mgpu* mg);
+	void DoPreVoltageUpdatesMg(class Engine_cuda_mgpu* mg);
+	void DoPostVoltageUpdatesMg(class Engine_cuda_mgpu* mg);
+	void Apply2VoltagesMg(class Engine_cuda_mgpu* mg);
+	bool m_mgpu = false;
+	std::vector<int> mg_dev, mg_W0, mg_W1;     // clipped face dims per slab
+	std::vector<int> mg_iofs, mg_jofs;          // slab-local coordinate offsets
+	std::vector<int> mg_line, mg_shift;         // slab-local face/inner lines
+	std::vector<FDTD_FLOAT*> mg_cP, mg_cPP;     // sliced coeffs per slab
+	std::vector<FDTD_FLOAT*> mg_vP, mg_vPP;     // aux state per slab
 #endif
 };
 

@@ -67,6 +67,14 @@ Engine_Ext_Mur_ABC::~Engine_Ext_Mur_ABC()
 	if (d_mur_nyPP)  cudaFree(d_mur_nyPP);
 	if (d_volt_nyP)  cudaFree(d_volt_nyP);
 	if (d_volt_nyPP) cudaFree(d_volt_nyPP);
+	for (size_t g = 0; g < mg_cP.size(); ++g)
+	{
+		cudaSetDevice(mg_dev[g]);
+		if (mg_cP[g])  cudaFree(mg_cP[g]);
+		if (mg_cPP[g]) cudaFree(mg_cPP[g]);
+		if (mg_vP[g])  cudaFree(mg_vP[g]);
+		if (mg_vPP[g]) cudaFree(mg_vPP[g]);
+	}
 #endif
 }
 

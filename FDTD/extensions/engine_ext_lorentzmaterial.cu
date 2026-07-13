@@ -76,6 +76,13 @@ void lorPreCurrKernel(const FDTD_FLOAT* curr, dim3 dim, const disp_cell* c,
 
 // Apply: subtract the integrated ADE from the freshly core-updated field.
 // Matches Engine_Ext_Dispersive::Apply2VoltagesImpl / Apply2CurrentImpl.
+// Each component is only written when its ADE is nonzero: subtracting an
+// exact 0 is a no-op, and skipping it removes the read-modify-write on
+// inactive components. That matters for EDGE-based dispersive extensions
+// (LossyMetal SIBC): a corner cell can appear as two entries in ONE order
+// (one per edge direction), and unconditional 3-component RMWs from both
+// threads race (lost updates). With the guard, the two entries touch
+// disjoint components -- race-free and bit-deterministic, no atomics needed.
 __global__
 void dispApplyKernel(FDTD_FLOAT* field, dim3 dim, const disp_cell* c,
 	const FDTD_FLOAT* ADE, int N)
@@ -83,9 +90,12 @@ void dispApplyKernel(FDTD_FLOAT* field, dim3 dim, const disp_cell* c,
 	for (auto k : hemi::grid_stride_range(0, N)) {
 		disp_cell e = c[k];
 		int base = (e.x * dim.y * dim.z + e.y * dim.z + e.z) * 3;
-		field[base + 0] -= ADE[k * 3 + 0];
-		field[base + 1] -= ADE[k * 3 + 1];
-		field[base + 2] -= ADE[k * 3 + 2];
+		FDTD_FLOAT a0 = ADE[k * 3 + 0];
+		FDTD_FLOAT a1 = ADE[k * 3 + 1];
+		FDTD_FLOAT a2 = ADE[k * 3 + 2];
+		if (a0 != 0) field[base + 0] -= a0;
+		if (a1 != 0) field[base + 1] -= a1;
+		if (a2 != 0) field[base + 2] -= a2;
 	}
 }
 

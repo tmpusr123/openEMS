@@ -35,6 +35,7 @@ class Operator : public Operator_Base
 {
 	friend class Engine;
 	friend class Engine_Interface_FDTD;
+	friend class Operator_Ext_LossyMetal;
 	friend class Operator_Ext_LorentzMaterial; 	// We need to find a way around this... friend class Operator_Extension only would be nice
 	friend class Operator_Ext_ConductingSheet; 	// We need to find a way around this... friend class Operator_Extension only would be nice
 	friend class Operator_Ext_PML_SF_Plane;

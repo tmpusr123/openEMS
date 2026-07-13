@@ -6,6 +6,7 @@
 #include "extensions/operator_ext_tfsf.h"
 #include "extensions/operator_ext_lumpedRLC.h"
 #include "extensions/operator_ext_lorentzmaterial.h"
+#include "extensions/operator_ext_mur_abc.h"
 
 #include "tools/array_ops.h"
 
@@ -67,6 +68,8 @@ Engine* Operator_CUDA::CreateEngine()
 		// partitioned per slab; the ADE recurrence is cell-local). This also
 		// covers ConductingSheet, which derives from the Lorentz operator.
 		if (dynamic_cast<Operator_Ext_LorentzMaterial*>(ext)) continue;
+		// Mur ABC is mgpu-ported (faces clipped per slab; all reads in-slab).
+		if (dynamic_cast<Operator_Ext_Mur_ABC*>(ext)) continue;
 		if (Operator_Ext_TFSF* t = dynamic_cast<Operator_Ext_TFSF*>(ext))
 			{ if (!t->IsActive()) continue; }
 		ext_ok = false;
