@@ -33,7 +33,7 @@ public:
 
 	virtual bool BuildExtension();
 
-	virtual Engine_Extension* CreateEngineExtention();
+	virtual Engine_Extension* CreateEngineExtention(Engine *engine);
 
 	virtual bool IsCylinderCoordsSave(bool closedAlpha, bool R0_included) const {UNUSED(closedAlpha); UNUSED(R0_included); return true;}
 	virtual bool IsCylindricalMultiGridSave(bool child) const {UNUSED(child); return true;}
@@ -41,12 +41,9 @@ public:
 	// FIXME, this extension is not save or unknown to be save to use with MPI
 	virtual bool IsMPISave() const {return false;}
 
-	virtual std::string GetExtensionName() const
-	{
-		return std::string("Extension for the Cylinder-Coords Operator");
-	}
+	virtual std::string GetExtensionName() const {return std::string("Extension for the Cylinder-Coords Operator");}
 
-	virtual void ShowStat(std::ostream &ostr) const;
+	virtual void ShowStat(ostream &ostr) const;
 
 protected:
 	Operator_Cylinder* m_Op_Cyl;

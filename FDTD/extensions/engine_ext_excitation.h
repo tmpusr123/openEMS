@@ -23,7 +23,20 @@
 #include "FDTD/operator.h"
 #include "engine_extension_dispatcher.h"
 
+#include <vector>
+
 class Operator_Ext_Excitation;
+
+struct exitation_point {
+		int x;
+		int y;
+		int z;
+		int dir;            // 0: x, 1: y, 2: z
+		int delay;
+		int length;
+		FDTD_FLOAT amp;
+};
+
 
 class Engine_Ext_Excitation : public Engine_Extension
 {
@@ -34,12 +47,37 @@ public:
 	virtual void Apply2Voltages();
 	virtual void Apply2Current();
 
+#if WITH_CUDA
+	void SetEngine(Engine* eng);
+	virtual bool IsCUDACapable() const {return true;}
+#endif
+
 protected:
 	template <typename EngType>
 	void Apply2VoltagesImpl(EngType* eng);
 
 	template <typename EngType>
 	void Apply2CurrentImpl(EngType* eng);
+
+#if WITH_CUDA
+	void Apply2VoltagesCuda(Engine_cuda* eng);
+	void Apply2CurrentCuda(Engine_cuda* eng);
+	FDTD_FLOAT* d_signal_v;
+	exitation_point *d_ep_v;
+
+	FDTD_FLOAT* d_signal_a;
+	exitation_point *d_ep_a;
+
+	// multi-GPU: excitation points partitioned by owning slab (coordinates
+	// translated to slab-local x incl. the ghost-plane offset); signals
+	// replicated per device. Empty when running single-GPU.
+	std::vector<exitation_point*> mg_ep_v, mg_ep_a;
+	std::vector<int>              mg_n_v,  mg_n_a;
+	std::vector<FDTD_FLOAT*>      mg_sig_v, mg_sig_a;
+	void SetEngineMg(class Engine_cuda_mgpu* mg);
+	void Apply2VoltagesMg(class Engine_cuda_mgpu* mg);
+	void Apply2CurrentMg(class Engine_cuda_mgpu* mg);
+#endif
 
 	Operator_Ext_Excitation* m_Op_Exc;
 };

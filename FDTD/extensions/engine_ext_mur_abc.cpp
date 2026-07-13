@@ -19,11 +19,9 @@
 #include "operator_ext_mur_abc.h"
 #include "FDTD/engine.h"
 #include "FDTD/engine_sse.h"
+#include "tools/array_ops.h"
 #include "tools/useful.h"
 #include "operator_ext_excitation.h"
-
-using std::cerr;
-using std::endl;
 
 Engine_Ext_Mur_ABC::Engine_Ext_Mur_ABC(Operator_Ext_Mur_ABC* op_ext) :
 	Engine_Extension(op_ext),
@@ -64,6 +62,12 @@ Engine_Ext_Mur_ABC::Engine_Ext_Mur_ABC(Operator_Ext_Mur_ABC* op_ext) :
 
 Engine_Ext_Mur_ABC::~Engine_Ext_Mur_ABC()
 {
+#if WITH_CUDA
+	if (d_mur_nyP)   cudaFree(d_mur_nyP);
+	if (d_mur_nyPP)  cudaFree(d_mur_nyPP);
+	if (d_volt_nyP)  cudaFree(d_volt_nyP);
+	if (d_volt_nyPP) cudaFree(d_volt_nyPP);
+#endif
 }
 
 
@@ -103,17 +107,23 @@ void Engine_Ext_Mur_ABC::DoPreVoltageUpdatesImpl(EngType* eng, int threadID)
 			pos[m_nyPP] = j;
 			pos_shift[m_nyPP] = j;
 
-			m_volt_nyP(i,j) = eng->EngType::GetVolt(m_nyP, pos_shift) -
-				m_Op_mur->m_Mur_Coeff_nyP(i,j) * eng->EngType::GetVolt(m_nyP, pos);
+			m_volt_nyP[i][j] = eng->EngType::GetVolt(m_nyP, pos_shift) -
+				m_Op_mur->m_Mur_Coeff_nyP[i][j] * eng->EngType::GetVolt(m_nyP, pos);
 
-			m_volt_nyPP(i,j) = eng->EngType::GetVolt(m_nyPP, pos_shift) -
-				m_Op_mur->m_Mur_Coeff_nyPP(i,j) * eng->EngType::GetVolt(m_nyPP, pos);
+			m_volt_nyPP[i][j] = eng->EngType::GetVolt(m_nyPP, pos_shift) -
+				m_Op_mur->m_Mur_Coeff_nyPP[i][j] * eng->EngType::GetVolt(m_nyPP, pos);
 		}
 	}
 }
 
 void Engine_Ext_Mur_ABC::DoPreVoltageUpdates(int threadID)
 {
+#if WITH_CUDA
+	if (m_Eng->GetType() == Engine::CUDA) {
+		if (threadID == 0) DoPreVoltageUpdatesCuda(static_cast<Engine_cuda*>(m_Eng));
+		return;
+	}
+#endif
 	ENG_DISPATCH_ARGS(DoPreVoltageUpdatesImpl, threadID);
 }
 
@@ -135,16 +145,22 @@ void Engine_Ext_Mur_ABC::DoPostVoltageUpdatesImpl(EngType* eng, int threadID)
 		{
 			pos_shift[m_nyPP] = j;
 
-			m_volt_nyP(i,j) +=
-				m_Op_mur->m_Mur_Coeff_nyP(i,j) * eng->EngType::GetVolt(m_nyP, pos_shift);
-			m_volt_nyPP(i,j) +=
-				m_Op_mur->m_Mur_Coeff_nyPP(i,j) * eng->EngType::GetVolt(m_nyPP, pos_shift);
+			m_volt_nyP[i][j] +=
+				m_Op_mur->m_Mur_Coeff_nyP[i][j] * eng->EngType::GetVolt(m_nyP, pos_shift);
+			m_volt_nyPP[i][j] +=
+				m_Op_mur->m_Mur_Coeff_nyPP[i][j] * eng->EngType::GetVolt(m_nyPP, pos_shift);
 		}
 	}
 }
 
 void Engine_Ext_Mur_ABC::DoPostVoltageUpdates(int threadID)
 {
+#if WITH_CUDA
+	if (m_Eng->GetType() == Engine::CUDA) {
+		if (threadID == 0) DoPostVoltageUpdatesCuda(static_cast<Engine_cuda*>(m_Eng));
+		return;
+	}
+#endif
 	ENG_DISPATCH_ARGS(DoPostVoltageUpdatesImpl, threadID);
 }
 
@@ -166,13 +182,19 @@ void Engine_Ext_Mur_ABC::Apply2VoltagesImpl(EngType* eng, int threadID)
 		{
 			pos[m_nyPP] = j;
 
-			eng->EngType::SetVolt(m_nyP , pos, m_volt_nyP(i,j));
-			eng->EngType::SetVolt(m_nyPP, pos, m_volt_nyPP(i,j));
+			eng->EngType::SetVolt(m_nyP, pos, m_volt_nyP[i][j]);
+			eng->EngType::SetVolt(m_nyPP, pos, m_volt_nyPP[i][j]);
 		}
 	}
 }
 
 void Engine_Ext_Mur_ABC::Apply2Voltages(int threadID)
 {
+#if WITH_CUDA
+	if (m_Eng->GetType() == Engine::CUDA) {
+		if (threadID == 0) Apply2VoltagesCuda(static_cast<Engine_cuda*>(m_Eng));
+		return;
+	}
+#endif
 	ENG_DISPATCH_ARGS(Apply2VoltagesImpl, threadID);
 }

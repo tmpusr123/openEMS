@@ -1,6 +1,5 @@
 /*
 *	Copyright (C) 2023 Gadi Lahav (gadi@rfwithcare.com)
-*	Copyright (C) 2026 Thorsten Liebig (Thorsten.Liebig@gmx.de)
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -20,6 +19,7 @@
 #include "tools/array_ops.h"
 #include "tools/constants.h"
 //#include "cond_sheet_parameter.h"
+#include "tools/AdrOp.h"
 
 #include "operator_ext_lumpedRLC.h"
 #include "engine_ext_lumpedRLC.h"
@@ -29,9 +29,6 @@
 #include "CSPropLumpedElement.h"
 
 #define COPY_V2A(V,A) std::copy(V.begin(),V.end(),A)
-
-using std::cerr;
-using std::endl;
 
 Operator_Ext_LumpedRLC::Operator_Ext_LumpedRLC(Operator* op) : Operator_Extension(op)
 {
@@ -57,12 +54,24 @@ Operator_Ext_LumpedRLC::Operator_Ext_LumpedRLC(Operator* op) : Operator_Extensio
 
 Operator_Ext_LumpedRLC::Operator_Ext_LumpedRLC(Operator* op, Operator_Ext_LumpedRLC* op_ext) : Operator_Extension(op,op_ext)
 {
-	RLC_count = 0;
-	v_RLC_ilv = NULL; v_RLC_i2v = NULL;
-	v_RLC_vv2 = NULL; v_RLC_vj1 = NULL; v_RLC_vj2 = NULL;
-	v_RLC_vvd = NULL; v_RLC_ib0 = NULL; v_RLC_b1  = NULL; v_RLC_b2  = NULL;
+	// Parallel circuit coefficients
+	v_RLC_ilv = NULL;
+	v_RLC_i2v = NULL;
+
+	// Series circuit coefficients
+	v_RLC_vv2	= NULL;	// Coefficient for [n-2] time of Vd update in Vd equation
+	v_RLC_vj1	= NULL;	// Coefficient for [n-1] time of J update in Vd equation
+	v_RLC_vj2	= NULL;	// Coefficient for [n-2] time of J update in Vd equation
+	v_RLC_vvd	= NULL;	// Coefficient to multiply all Vd in the Vd update equation
+	v_RLC_ib0	= NULL;	// Inverse of beta_0
+	v_RLC_b1	= NULL;	// beta_1
+	v_RLC_b2	= NULL;	// beta_2
+
+	// Additional containers
 	v_RLC_dir = NULL;
 	v_RLC_pos = NULL;
+
+	RLC_count = 0;
 }
 
 Operator_Ext_LumpedRLC::~Operator_Ext_LumpedRLC()
@@ -95,6 +104,8 @@ Operator_Ext_LumpedRLC::~Operator_Ext_LumpedRLC()
 
 Operator_Extension* Operator_Ext_LumpedRLC::Clone(Operator* op)
 {
+	if (dynamic_cast<Operator_Ext_LumpedRLC*>(this)==NULL)
+		return NULL;
 	return new Operator_Ext_LumpedRLC(op, this);
 }
 
@@ -108,25 +119,25 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 
 	unsigned int 	pos[] = {0,0,0};
 
-	std::vector<CSProperties*> cs_props;
+	vector<CSProperties*> cs_props;
 
 	int 			dir;
 	CSPropLumpedElement::LEtype lumpedType;
 
-	std::vector<unsigned int> 	v_pos[3];
+	vector<unsigned int> 	v_pos[3];
 
-	std::vector<int>		v_dir;
+	vector<int>		v_dir;
 
-	std::vector<double>  v_ilv;
-	std::vector<double>	v_i2v;
+	vector<double>  v_ilv;
+	vector<double>	v_i2v;
 
-	std::vector<double>	v_vv2;
-	std::vector<double>	v_vj1;
-	std::vector<double>	v_vj2;
-	std::vector<double>	v_vvd;
-	std::vector<double>	v_ib0;
-	std::vector<double>	v_b1;
-	std::vector<double>	v_b2;
+	vector<double>	v_vv2;
+	vector<double>	v_vj1;
+	vector<double>	v_vj2;
+	vector<double>	v_vvd;
+	vector<double>	v_ib0;
+	vector<double>	v_b1;
+	vector<double>	v_b2;
 
 	// Lumped RLC parameters
 	double R, L, C;
@@ -203,13 +214,14 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 			cerr	<< "Operator_Ext_LumpedRLC::BuildExtension(): Warning: L = 0 in a parallel circuit would be a short circuit; treating as absent. ID: "
 					<< cs_RLC_props->GetID() << " @ Property: " << cs_RLC_props->GetName() << endl;
 
-		// Check that this is a lumped RLC. If this is a regular parallel LC, this is handled by the regular engine.
+
+		// Check that this is a lumped RLC
 		if (!(this->IsLElumpedRLC(cs_RLC_props)))
 			continue;
 
 		if ((dir < 0) || (dir > 2))
 		{
-			cerr << "Operator_Ext_LumpedRLC::BuildExtension(): Warning: Lumped Element direction is invalid! skipping. "
+			cerr << "Operator_Ext_LumpedRLC::Calc_LumpedElements(): Warning: Lumped Element direction is invalid! skipping. "
 					<< " ID: " << cs_RLC_props->GetID() << " @ Property: " << cs_RLC_props->GetName() << endl;
 			continue;
 		}
@@ -218,7 +230,9 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 		int dir_p1 = (dir + 1) % 3;
 		int dir_p2 = (dir + 2) % 3;
 
-		std::vector<CSPrimitives*> cs_RLC_prims = cs_RLC_props->GetAllPrimitives();
+		// Now iterate through primitive(s). I still think there should be only one per-
+		// material definition, but maybe I'm wrong...
+		vector<CSPrimitives*> cs_RLC_prims = cs_RLC_props->GetAllPrimitives();
 
 		for (size_t boxIdx = 0 ; boxIdx < cs_RLC_prims.size() ; ++boxIdx)
 		{
@@ -268,37 +282,41 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 				// All cells in directions 1 and 2 are considered parallel connection
 				unsigned int Npar = Ncells_1*Ncells_2;
 
-				// Scale to per-cell values.  NaN means the component is absent:
-				//   series  R/L absent → wire (0)
-				//   parallel R absent  → open path (G = 0)
-				//   C absent           → use natural grid capacitance (handled below)
+				// Separate elements such that individual elements can be calculated.
+				// NaN marks an absent component (see the isnan warning block above);
+				// guard the per-cell scaling so an absent R/L/C does not propagate
+				// NaN into the ADE coefficients and silently poison the whole sim.
 				double	dL = std::isnan(L) ? 0.0 : L*Npar/Ncells_0,
 						dR = std::isnan(R) ? 0.0 : R*Npar/Ncells_0,
 						dG = (std::isnan(R) || R == 0.0) ? 0.0 : (1.0/R)*Ncells_0/Npar,
 						dC = std::isnan(C) ? 0.0 : C*Ncells_0/Npar;
 
-				// Series ADE coefficients — computed only for SERIES to avoid division
-				// by zero when dC == 0.  Absent C uses the RL-only form.
+				// Series ADE coefficients. When C is absent (dC==0) use the RL-only
+				// closed form to avoid dividing by dC.
 				double ib0 = 0.0, b1 = 0.0, b2 = 0.0;
-				if (lumpedType == CSPropLumpedElement::SERIES)
+				if (dC == 0.0)
 				{
-					if (dC == 0.0)
-					{
-						ib0 = dT/(2.0*dL + dT*dR);
-						b1  = -4.0*dL/dT;
-						b2  = (2.0*dL - dT*dR)/dT;
-					}
-					else
-					{
-						ib0 = 2.0*dT*dC/(4.0*dL*dC + 2.0*dT*dR*dC + dT*dT);
-						b1  = (dT*dT - 4.0*dL*dC)/(dT*dC);
-						b2  = (4.0*dL*dC - 2.0*dT*dR*dC + dT*dT)/(2.0*dT*dC);
-					}
+					ib0 = dT/(2.0*dL + dT*dR);
+					b1  = -4.0*dL/dT;
+					b2  = (2.0*dL - dT*dR)/dT;
 				}
+				else
+				{
+					ib0 = 2.0*dT*dC/(4.0*dL*dC + 2.0*dT*dR*dC + dT*dT);
+					b1  = (dT*dT - 4.0*dL*dC)/(dT*dC);
+					b2  = (4.0*dL*dC - 2.0*dT*dR*dC + dT*dT)/(2.0*dT*dC);
+				}
+
+				// Special case: If this is a parallel resonant circuit, and there is no
+				// parallel resistor, use zero conductivity. May be risky when low-loss
+				// simulations are involved
+				if (lumpedType == CSPropLumpedElement::PARALLEL)
+					if (R == 0.0)
+						dG = 0.0;
 
 				int iPos = 0;
 
-				double Zmin, Zcd_min;
+				double Zmin,Zcd_min;
 
 				// In the various positions, update the capacitors and "inverse" resistors
 				for (pos[dir] = uiStart[dir] ; pos[dir] < uiStop[dir] ; ++pos[dir])
@@ -309,39 +327,45 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 						{
 							iPos = m_Op->MainOp->SetPos(pos[0],pos[1],pos[2]);
 
+
+							// Separate to two different cases. Parallel and series
 							switch (lumpedType)
 							{
 								case CSPropLumpedElement::PARALLEL:
-								{
-									// Use the explicit capacitor if set; otherwise fall back to the
-									// natural grid capacitance, adjusting upward if it is too small
-									// to keep the ADE stable relative to R and L.
-									double dC_cell;
+									// Update capacitor either way.
 									if (dC > 0)
-									{
 										m_Op->EC_C[dir][iPos] = dC;
-										dC_cell = dC;
-									}
 									else
-									{
-										dC_cell = m_Op->EC_C[dir][iPos];
-										Zmin    = std::max(dR, 2*PI*fMax*dL);
-										Zcd_min = 1.0/(2.0*PI*fMax*dC_cell);
-										if (Zcd_min < LUMPED_RLC_Z_FACT*Zmin)
-										{
-											dC_cell = 1.0/(2*PI*fMax*Zmin*LUMPED_RLC_Z_FACT);
-											m_Op->EC_C[dir][iPos] = dC_cell;
-										}
-									}
+										// This case takes the "natural" capacitor into account.
+										dC = m_Op->EC_C[dir][iPos];
 
-									v_i2v.push_back((dT/dC_cell)/(1.0 + dT*dG/(2.0*dC_cell)));
+									v_i2v.push_back((dT/dC)/(1.0 + dT*dG/(2.0*dC)));
 
 									// Update conductivity
 									if (R >= 0)
 										m_Op->EC_G[dir][iPos] = dG;
 
 									// Update coefficients with respect to the parallel inductance
-									v_ilv.push_back((L > 0) ? dT/dL : 0.0);
+									if (L > 0)
+										v_ilv.push_back(dT/dL);
+									else
+										v_ilv.push_back(0.0);
+
+									// Take into account the case that the "natural" capacitor is too small
+									// with respect to the inductor or the resistor, and add a warning.
+									if (dC == 0)
+									{
+										double Cd = m_Op->EC_C[dir][iPos];
+										Zmin = max(dR,2*PI*fMax*dL);
+										Zcd_min = 1.0/(2.0*PI*fMax*Cd);
+
+										// Check if the "parasitic" capcitance is not small enough
+										if (Zcd_min < LUMPED_RLC_Z_FACT*Zmin)
+										{
+											Cd = 1.0/(2*PI*fMax*Zmin*LUMPED_RLC_Z_FACT);
+											m_Op->EC_C[dir][iPos] = Cd;
+										}
+									}
 
 									v_vv2.push_back(0.0);
 									v_vj1.push_back(0.0);
@@ -351,39 +375,40 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 									v_b1.push_back(0.0);
 									v_b2.push_back(0.0);
 
+									// Update with discrete component values of
 									m_Op->Calc_ECOperatorPos(dir,pos);
 
 									v_dir.push_back(dir);
 
 									break;
-								}
 
 								case CSPropLumpedElement::SERIES:
-								{
 									m_Op->EC_G[dir][iPos] = 0.0;
 
+									// is a series inductor, modeled separately.
 									FDTD_FLOAT Cd = m_Op->EC_C[dir][iPos];
 
-									// Check if the natural grid capacitance is too small
-									// relative to the series impedance at fMax.
+									// Calculate minimum impedance, at maximum frequency.
+									// When C is absent (dC==0) drop the 1/dC capacitive
+									// reactance term to avoid a divide-by-zero -> inf Zmin.
 									if (dC)
 										Zmin = sqrt(pow(dR,2) + pow(2*PI*fMax*dL - 1.0/(dC*2*PI*fMax),2));
 									else
 										Zmin = sqrt(pow(dR,2) + pow(2*PI*fMax*dL,2));
-
 									Zcd_min = 1.0/(2.0*PI*fMax*Cd);
 
+									// Check if the "parasitic" capcitance is not small enough
 									if (Zcd_min < LUMPED_RLC_Z_FACT*Zmin)
 									{
 										Cd = 1.0/(2*PI*fMax*Zmin*LUMPED_RLC_Z_FACT);
 										m_Op->EC_C[dir][iPos] = Cd;
 									}
 
-									// No contribution from parallel inductor or capacitor update
+									// No contribution from parallel inductor
 									v_ilv.push_back(0.0);
 									v_i2v.push_back(0.0);
 
-									// Contributions from series R, L, C via ADE coefficients
+									// Contributions from series resistor and inductor
 									v_vv2.push_back(0.5*dT*ib0/Cd);
 									v_vj1.push_back(0.5*dT*(b1*ib0 - 1.0)/Cd);
 									v_vj2.push_back(0.5*dT*b2*ib0/Cd);
@@ -397,7 +422,6 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 									v_dir.push_back(dir);
 
 									break;
-								}
 							}
 
 							// Store position and direction
@@ -501,15 +525,17 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 	return true;
 }
 
-Engine_Extension* Operator_Ext_LumpedRLC::CreateEngineExtention()
+Engine_Extension* Operator_Ext_LumpedRLC::CreateEngineExtention(Engine *engine)
 {
 	Engine_Ext_LumpedRLC* eng_ext_RLC = new Engine_Ext_LumpedRLC(this);
 	return eng_ext_RLC;
 }
 
-void Operator_Ext_LumpedRLC::ShowStat(std::ostream &ostr)  const
+void Operator_Ext_LumpedRLC::ShowStat(ostream &ostr)  const
 {
 	Operator_Extension::ShowStat(ostr);
+	string On_Off[2] = {"Off", "On"};
+
 	ostr << "Active cells\t\t: " << RLC_count << endl;
 }
 

@@ -39,7 +39,7 @@ void Engine_Extension::SetNumberOfThreads(int nrThread)
 	m_NrThreads=nrThread;
 }
 
-std::string Engine_Extension::GetExtensionName() const
+string Engine_Extension::GetExtensionName() const
 {
 	if (m_Op_ext)
 		return m_Op_ext->GetExtensionName();

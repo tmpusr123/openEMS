@@ -1,6 +1,5 @@
 /*
 *	Copyright (C) 2023 Gadi Lahav (gadi@rfwithcare.com)
-*	Copyright (C) 2026 Thorsten Liebig (Thorsten.Liebig@gmx.de)
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -19,7 +18,7 @@
 #ifndef OPERATOR_EXT_LUMPEDRLC_H_
 #define OPERATOR_EXT_LUMPEDRLC_H_
 
-#include <vector>
+#include "vector"
 
 #include "FDTD/operator.h"
 #include "operator_extension.h"
@@ -41,18 +40,18 @@ public:
 
 	virtual bool BuildExtension();
 
-	virtual Engine_Extension* CreateEngineExtention();
+	virtual Engine_Extension* CreateEngineExtention(Engine *engine);
 
 	virtual bool IsCylinderCoordsSave(bool closedAlpha, bool R0_included) const {UNUSED(closedAlpha); UNUSED(R0_included); return true;}
 	virtual bool IsCylindricalMultiGridSave(bool child) const {UNUSED(child); return true;}
 	virtual bool IsMPISave() const {return true;}
 
-	virtual std::string GetExtensionName() const
-	{
-		return std::string("Series/Parallel Lumped RLC load");
-	}
+	//! Number of active lumped-RLC cells (0 = extension is inert)
+	unsigned int GetRLCCount() const {return RLC_count;}
 
-	virtual void ShowStat(std::ostream &ostr) const;
+	virtual string GetExtensionName() const {return string("Series\\Parallel Lumped RLC load");}
+
+	virtual void ShowStat(ostream &ostr) const;
 
 	virtual bool IsLElumpedRLC(const CSPropLumpedElement* const p_prop);
 

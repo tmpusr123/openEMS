@@ -21,12 +21,15 @@
 #include <string>
 
 #include <iostream>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "tools/global.h"
 
 class Operator;
 class Operator_Cylinder;
 class Engine_Extension;
+class Engine;
 
 //! Abstract base-class for all operator extensions
 class Operator_Extension
@@ -44,7 +47,7 @@ public:
 
 	virtual bool BuildExtension() {return true;}
 
-	virtual Engine_Extension* CreateEngineExtention() {return 0;}
+	virtual Engine_Extension* CreateEngineExtention(Engine *engine) {return 0;};
 	virtual Engine_Extension* GetEngineExtention() {return m_Eng_Ext;}
 
 	//! The cylindrical operator will check whether the extension is save to use. Default is false. Derive this method to override.
@@ -56,10 +59,7 @@ public:
 	//! The MPI operator (if enabled) will check whether the extension is compatible with MPI. Default is false. Derive this method to override.
 	virtual bool IsMPISave() const {return false;}
 
-	virtual std::string GetExtensionName() const
-	{
-		return std::string("Abstract Operator Extension Base Class");
-	}
+	virtual std::string GetExtensionName() const {return std::string("Abstract Operator Extension Base Class");}
 
 	virtual void ShowStat(std::ostream &ostr) const;
 

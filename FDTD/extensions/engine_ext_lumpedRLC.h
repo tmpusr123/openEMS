@@ -1,6 +1,5 @@
 /*
 *	Copyright (C) 2023 Gadi Lahav (gadi@rfwithcare.com)
-*	Copyright (C) 2026 Thorsten Liebig (Thorsten.Liebig@gmx.de)
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -40,6 +39,17 @@ public:
 	virtual void DoPreVoltageUpdates();
 	virtual void Apply2Voltages();
 
+#if WITH_CUDA
+	// On-device port so the lumped-RLC recurrence is captured in the CUDA graph.
+	// Geometry + coefficients per element, packed AoS and uploaded once.
+	struct rlc_cell {
+		int x, y, z, dir;
+		FDTD_FLOAT ilv, i2v, vv2, vj1, vj2, vvd, ib0, b1, b2;
+	};
+	virtual void SetEngine(Engine* eng);
+	virtual bool IsCUDACapable() const {return true;}
+#endif
+
 protected:
 	template <typename EngType>
 	void Apply2VoltagesImpl(EngType* eng);
@@ -54,6 +64,16 @@ protected:
 	FDTD_FLOAT **v_Vdn;		// Container for nodal vd at [n],[n-1],[n-2]
 	FDTD_FLOAT **v_Jn;		// Container for nodal J at [n],[n-1],[n-2]
 
+#if WITH_CUDA
+	void DoPreVoltageUpdatesCuda(Engine_cuda* eng);
+	void Apply2VoltagesCuda(Engine_cuda* eng);
+	rlc_cell   *d_cells = NULL;   // uploaded geometry+coeffs (RLC_count)
+	FDTD_FLOAT *d_Il  = NULL;     // running inductor current (parallel RLC)
+	FDTD_FLOAT *d_Vd1 = NULL;     // Vd[n-1]
+	FDTD_FLOAT *d_Vd2 = NULL;     // Vd[n-2]
+	FDTD_FLOAT *d_J1  = NULL;     // J[n-1]
+	FDTD_FLOAT *d_J2  = NULL;     // J[n-2]
+#endif
 };
 
-#endif // ENGINE_EXT_LUMPEDRLC_H
+#endif // ENGINE_EXT_LORENTZMATERIAL_H

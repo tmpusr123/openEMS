@@ -41,6 +41,14 @@ public:
 	virtual void Apply2Voltages() {Engine_Ext_Mur_ABC::Apply2Voltages(0);}
 	virtual void Apply2Voltages(int threadID);
 
+#if WITH_CUDA
+	// On the CUDA engine the Mur boundary runs as on-device kernels so it is
+	// captured into the per-timestep CUDA graph; coeffs + aux state live on the
+	// device (uploaded here). No host-side field access.
+	virtual void SetEngine(Engine* eng);
+	virtual bool IsCUDACapable() const {return true;}
+#endif
+
 protected:
 	template <typename EngType>
 	void DoPreVoltageUpdatesImpl(EngType* eng, int threadID);
@@ -62,13 +70,23 @@ protected:
 	int m_LineNr_Shift;
 	unsigned int m_numLines[2];
 
-	std::vector<unsigned int> m_start;
-	std::vector<unsigned int> m_numX;
+	vector<unsigned int> m_start;
+	vector<unsigned int> m_numX;
 
 	ArrayLib::ArrayIJ<FDTD_FLOAT>& m_Mur_Coeff_nyP;
 	ArrayLib::ArrayIJ<FDTD_FLOAT>& m_Mur_Coeff_nyPP;
 	ArrayLib::ArrayIJ<FDTD_FLOAT> m_volt_nyP; //n+1 direction
 	ArrayLib::ArrayIJ<FDTD_FLOAT> m_volt_nyPP; //n+2 direction
+
+#if WITH_CUDA
+	void DoPreVoltageUpdatesCuda(Engine_cuda* eng);
+	void DoPostVoltageUpdatesCuda(Engine_cuda* eng);
+	void Apply2VoltagesCuda(Engine_cuda* eng);
+	FDTD_FLOAT *d_mur_nyP  = NULL;   // uploaded coeff arrays (W0*W1)
+	FDTD_FLOAT *d_mur_nyPP = NULL;
+	FDTD_FLOAT *d_volt_nyP = NULL;   // device aux boundary voltages (W0*W1)
+	FDTD_FLOAT *d_volt_nyPP = NULL;
+#endif
 };
 
 #endif // ENGINE_EXT_MUR_ABC_H

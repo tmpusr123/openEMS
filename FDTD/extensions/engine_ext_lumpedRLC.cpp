@@ -1,7 +1,6 @@
 /*
 *	Additional
 *	Copyright (C) 2023 Gadi Lahav (gadi@rfwithcare.com)
-*	Copyright (C) 2026 Thorsten Liebig (Thorsten.Liebig@gmx.de)
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -29,14 +28,13 @@ Engine_Ext_LumpedRLC::Engine_Ext_LumpedRLC(Operator_Ext_LumpedRLC* op_ext_RLC) :
 
 	v_Vdn		= new FDTD_FLOAT*[3];
 	v_Jn		= new FDTD_FLOAT*[3];
-	v_Il		= NULL;
 
 	// No additional allocations are required if there are no actual lumped elements.
 	if (!(m_Op_Ext_RLC->RLC_count))
 		return;
 
 	// Initialize ADE containers for currents and voltages
-	v_Il		= new FDTD_FLOAT[m_Op_Ext_RLC->RLC_count];
+	v_Il 		= new FDTD_FLOAT[m_Op_Ext_RLC->RLC_count];
 
 	for (unsigned int posIdx = 0 ; posIdx < m_Op_Ext_RLC->RLC_count ; ++posIdx)
 		v_Il[posIdx] 	= 0.0;
@@ -49,7 +47,7 @@ Engine_Ext_LumpedRLC::Engine_Ext_LumpedRLC(Operator_Ext_LumpedRLC* op_ext_RLC) :
 		for (unsigned int posIdx = 0 ; posIdx < m_Op_Ext_RLC->RLC_count ; ++posIdx)
 		{
 			v_Jn[k][posIdx] = 0.0;
-			v_Vdn[k][posIdx] = 0.0;
+			v_Vdn[k][posIdx] = 0.0;;
 		}
 	}
 
@@ -77,6 +75,15 @@ Engine_Ext_LumpedRLC::~Engine_Ext_LumpedRLC()
 	v_Vdn	= NULL;
 	v_Jn	= NULL;
 
+#if WITH_CUDA
+	if (d_cells) cudaFree(d_cells);
+	if (d_Il)    cudaFree(d_Il);
+	if (d_Vd1)   cudaFree(d_Vd1);
+	if (d_Vd2)   cudaFree(d_Vd2);
+	if (d_J1)    cudaFree(d_J1);
+	if (d_J2)    cudaFree(d_J2);
+#endif
+
 	m_Op_Ext_RLC = NULL;
 
 
@@ -84,8 +91,15 @@ Engine_Ext_LumpedRLC::~Engine_Ext_LumpedRLC()
 
 void Engine_Ext_LumpedRLC::DoPreVoltageUpdates()
 {
-	if (!m_Op_Ext_RLC->RLC_count)
+#if WITH_CUDA
+	if (m_Eng->GetType() == Engine::CUDA) {
+		if (m_Op_Ext_RLC->RLC_count)
+			DoPreVoltageUpdatesCuda(static_cast<Engine_cuda*>(m_Eng));
 		return;
+	}
+#endif
+	unsigned int **pos = m_Op_Ext_RLC->v_RLC_pos;
+	int *dir = m_Op_Ext_RLC->v_RLC_dir;
 
 	// Iterate Vd containers
 	FDTD_FLOAT	*v_temp;
@@ -104,9 +118,6 @@ void Engine_Ext_LumpedRLC::DoPreVoltageUpdates()
 template <typename EngType>
 void Engine_Ext_LumpedRLC::Apply2VoltagesImpl(EngType* eng)
 {
-	if (!m_Op_Ext_RLC->RLC_count)
-		return;
-
 	unsigned int **pos = m_Op_Ext_RLC->v_RLC_pos;
 	int *dir = m_Op_Ext_RLC->v_RLC_dir;
 
@@ -151,5 +162,12 @@ void Engine_Ext_LumpedRLC::Apply2VoltagesImpl(EngType* eng)
 
 void Engine_Ext_LumpedRLC::Apply2Voltages()
 {
+#if WITH_CUDA
+	if (m_Eng->GetType() == Engine::CUDA) {
+		if (m_Op_Ext_RLC->RLC_count)
+			Apply2VoltagesCuda(static_cast<Engine_cuda*>(m_Eng));
+		return;
+	}
+#endif
 	ENG_DISPATCH(Apply2VoltagesImpl);
 }

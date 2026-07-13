@@ -74,6 +74,17 @@ Engine_Ext_LorentzMaterial::~Engine_Ext_LorentzMaterial()
 
 	delete[] volt_Lor_ADE;
 	volt_Lor_ADE=NULL;
+
+#if WITH_CUDA
+	for (size_t o = 0; o < d_cells.size(); ++o)
+	{
+		if (d_cells[o]) cudaFree(d_cells[o]);
+		if (d_vADE[o])  cudaFree(d_vADE[o]);
+		if (d_vLor[o])  cudaFree(d_vLor[o]);
+		if (d_iADE[o])  cudaFree(d_iADE[o]);
+		if (d_iLor[o])  cudaFree(d_iLor[o]);
+	}
+#endif
 }
 
 template <typename EngType>
@@ -121,6 +132,13 @@ void Engine_Ext_LorentzMaterial::DoPreVoltageUpdatesImpl(EngType* eng)
 
 void Engine_Ext_LorentzMaterial::DoPreVoltageUpdates()
 {
+#if WITH_CUDA
+	if (m_Eng->GetType() == Engine::CUDA) {
+		if (m_Order)
+			DoPreVoltageUpdatesCuda(static_cast<Engine_cuda*>(m_Eng));
+		return;
+	}
+#endif
 	ENG_DISPATCH(DoPreVoltageUpdatesImpl);
 }
 
@@ -169,5 +187,38 @@ void Engine_Ext_LorentzMaterial::DoPreCurrentUpdatesImpl(EngType* eng)
 
 void Engine_Ext_LorentzMaterial::DoPreCurrentUpdates()
 {
+#if WITH_CUDA
+	if (m_Eng->GetType() == Engine::CUDA) {
+		if (m_Order)
+			DoPreCurrentUpdatesCuda(static_cast<Engine_cuda*>(m_Eng));
+		return;
+	}
+#endif
 	ENG_DISPATCH(DoPreCurrentUpdatesImpl);
+}
+
+void Engine_Ext_LorentzMaterial::Apply2Voltages()
+{
+#if WITH_CUDA
+	if (m_Eng->GetType() == Engine::CUDA) {
+		if (m_Order)
+			Apply2VoltagesCuda(static_cast<Engine_cuda*>(m_Eng));
+		return;
+	}
+#endif
+	// CPU: the base dispersive implementation subtracts the ADE voltages.
+	Engine_Ext_Dispersive::Apply2Voltages();
+}
+
+void Engine_Ext_LorentzMaterial::Apply2Current()
+{
+#if WITH_CUDA
+	if (m_Eng->GetType() == Engine::CUDA) {
+		if (m_Order)
+			Apply2CurrentCuda(static_cast<Engine_cuda*>(m_Eng));
+		return;
+	}
+#endif
+	// CPU: the base dispersive implementation subtracts the ADE currents.
+	Engine_Ext_Dispersive::Apply2Current();
 }

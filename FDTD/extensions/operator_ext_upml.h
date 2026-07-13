@@ -20,7 +20,7 @@
 
 #include "FDTD/operator.h"
 #include "operator_extension.h"
-
+#include "engine_ext_united_upml.h"
 #include "tools/arraylib/array_nijk.h"
 
 class FunctionParser;
@@ -34,6 +34,7 @@ class FunctionParser;
 class Operator_Ext_UPML : public Operator_Extension
 {
 	friend class Engine_Ext_UPML;
+	friend class Engine_Ext_United_UPML;
 public:
 	virtual ~Operator_Ext_UPML();
 
@@ -62,28 +63,24 @@ public:
 
 		An empty function string will be ignored.
 	*/
-	virtual bool SetGradingFunction(std::string func);
+	virtual bool SetGradingFunction(string func);
 
 	virtual bool BuildExtension();
 
-	virtual Engine_Extension* CreateEngineExtention();
+	virtual Engine_Extension* CreateEngineExtention(Engine *engine);
 
-	virtual std::string GetExtensionName() const
-	{
-		return std::string("Uniaxial PML Extension");
-	}
+	virtual string GetExtensionName() const {return string("Uniaxial PML Extension");}
 
-	virtual void ShowStat(std::ostream &ostr) const;
+	virtual void ShowStat(ostream &ostr) const;
 
 	//! Create the UPML
-	static bool Create_UPML(
-		Operator* op,
-		const int ui_BC[6],
-		const unsigned int ui_size[6],
-		const std::string gradFunc
-	);
+	static bool Create_UPML(Operator* op, const int ui_BC[6], const unsigned int ui_size[6], const string gradFunc);
 
 protected:
+
+	static Engine_Ext_United_UPML *m_unitedEngine;		// pointer to the united engine extension
+	static std::vector<Operator_Ext_UPML*> m_opList;	// list of UPML operator extensions, can be used to create united engine
+
 	Operator_Ext_UPML(Operator* op);
 	int m_BC[6];
 	unsigned int m_Size[6];
@@ -91,19 +88,19 @@ protected:
 	unsigned int m_StartPos[3];
 	unsigned int m_numLines[3];
 
-	std::string m_GradFunc;
+	string m_GradFunc;
 	FunctionParser* m_GradingFunction;
 
 	void CalcGradingKappa(int ny, unsigned int pos[3], double Zm, double kappa_v[3], double kappa_i[3]);
 
 	void DeleteOp();
 
-	virtual FDTD_FLOAT& GetVV  (int ny, unsigned int pos[3]) {return vv  (ny, pos[0], pos[1], pos[2]);}
-	virtual FDTD_FLOAT& GetVVFO(int ny, unsigned int pos[3]) {return vvfo(ny, pos[0], pos[1], pos[2]);}
-	virtual FDTD_FLOAT& GetVVFN(int ny, unsigned int pos[3]) {return vvfn(ny, pos[0], pos[1], pos[2]);}
-	virtual FDTD_FLOAT& GetII  (int ny, unsigned int pos[3]) {return ii  (ny, pos[0], pos[1], pos[2]);}
-	virtual FDTD_FLOAT& GetIIFO(int ny, unsigned int pos[3]) {return iifo(ny, pos[0], pos[1], pos[2]);}
-	virtual FDTD_FLOAT& GetIIFN(int ny, unsigned int pos[3]) {return iifn(ny, pos[0], pos[1], pos[2]);}
+	virtual FDTD_FLOAT& GetVV(int ny, unsigned int pos[3]) {return vv[ny][pos[0]][pos[1]][pos[2]];}
+	virtual FDTD_FLOAT& GetVVFO(int ny, unsigned int pos[3]) {return vvfo[ny][pos[0]][pos[1]][pos[2]];}
+	virtual FDTD_FLOAT& GetVVFN(int ny, unsigned int pos[3]) {return vvfn[ny][pos[0]][pos[1]][pos[2]];}
+	virtual FDTD_FLOAT& GetII(int ny, unsigned int pos[3]) {return ii[ny][pos[0]][pos[1]][pos[2]];}
+	virtual FDTD_FLOAT& GetIIFO(int ny, unsigned int pos[3]) {return iifo[ny][pos[0]][pos[1]][pos[2]];}
+	virtual FDTD_FLOAT& GetIIFN(int ny, unsigned int pos[3]) {return iifn[ny][pos[0]][pos[1]][pos[2]];}
 
 	ArrayLib::ArrayNIJK<FDTD_FLOAT> vv;   //calc new voltage from old voltage
 	ArrayLib::ArrayNIJK<FDTD_FLOAT> vvfo; //calc new voltage from old voltage flux

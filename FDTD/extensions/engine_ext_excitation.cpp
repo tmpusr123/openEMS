@@ -23,11 +23,43 @@ Engine_Ext_Excitation::Engine_Ext_Excitation(Operator_Ext_Excitation* op_ext) : 
 {
 	m_Op_Exc = op_ext;
 	m_Priority = ENG_EXT_PRIO_EXCITATION;
+#if WITH_CUDA
+	// NULL-init so the dtor doesn't cudaFree garbage for a voltage-only port
+	// (d_ep_a/d_signal_a are only allocated when there is current excitation).
+	d_signal_v = NULL;
+	d_ep_v = NULL;
+	d_signal_a = NULL;
+	d_ep_a = NULL;
+#endif
 }
 
 Engine_Ext_Excitation::~Engine_Ext_Excitation()
 {
+#if WITH_CUDA
+	if (d_signal_v != NULL) {
+		cudaFree(d_signal_v);
+		d_signal_v = NULL;
+	}
+	if (d_ep_v != NULL) {
+		cudaFree(d_ep_v);
+		d_ep_v = NULL;
+	}
+	if (d_signal_a != NULL) {
+		cudaFree(d_signal_a);
+		d_signal_a = NULL;
+	}
+	if (d_ep_a != NULL) {
+		cudaFree(d_ep_a);
+		d_ep_a = NULL;
+	}
 
+	// multi-GPU per-slab allocations
+	for (auto p : mg_ep_v)  if (p) cudaFree(p);
+	for (auto p : mg_ep_a)  if (p) cudaFree(p);
+	for (auto p : mg_sig_v) if (p) cudaFree(p);
+	for (auto p : mg_sig_a) if (p) cudaFree(p);
+
+#endif
 }
 
 template <typename EngType>
@@ -55,13 +87,23 @@ void Engine_Ext_Excitation::Apply2VoltagesImpl(EngType* eng)
 		pos[0]=m_Op_Exc->Volt_index[0][n];
 		pos[1]=m_Op_Exc->Volt_index[1][n];
 		pos[2]=m_Op_Exc->Volt_index[2][n];
+
+		FDTD_FLOAT v = m_Op_Exc->Volt_amp[n]*exc_volt[exc_pos];
+
 		eng->EngType::SetVolt(ny,pos, eng->EngType::GetVolt(ny,pos) + m_Op_Exc->Volt_amp[n]*exc_volt[exc_pos]);
 	}
 }
 
 void Engine_Ext_Excitation::Apply2Voltages()
 {
-	ENG_DISPATCH(Apply2VoltagesImpl);
+#if 1
+	if (m_Eng->GetType() == Engine::CUDA) {
+		Apply2VoltagesCuda(dynamic_cast<Engine_cuda *>(m_Eng));
+	} else
+#endif
+	{
+		ENG_DISPATCH(Apply2VoltagesImpl);
+	}
 }
 
 template <typename EngType>
@@ -90,10 +132,18 @@ void Engine_Ext_Excitation::Apply2CurrentImpl(EngType* eng)
 		pos[1]=m_Op_Exc->Curr_index[1][n];
 		pos[2]=m_Op_Exc->Curr_index[2][n];
 		eng->EngType::SetCurr(ny,pos, eng->EngType::GetCurr(ny,pos) + m_Op_Exc->Curr_amp[n]*exc_curr[exc_pos]);
+
 	}
 }
 
 void Engine_Ext_Excitation::Apply2Current()
 {
-	ENG_DISPATCH(Apply2CurrentImpl);
+#if 1
+	if (m_Eng->GetType() == Engine::CUDA) {
+		Apply2CurrentCuda(dynamic_cast<Engine_cuda *>(m_Eng));
+	}  else
+#endif
+	{
+		ENG_DISPATCH(Apply2CurrentImpl);
+	}
 }

@@ -32,18 +32,15 @@ public:
 
 	virtual bool BuildExtension();
 
-	virtual Engine_Extension* CreateEngineExtention();
+	virtual Engine_Extension* CreateEngineExtention(Engine *engine);
 
 	virtual bool IsCylinderCoordsSave(bool closedAlpha, bool R0_included) const {UNUSED(closedAlpha); UNUSED(R0_included); return true;}
 	virtual bool IsCylindricalMultiGridSave(bool child) const {UNUSED(child); return true;}
 	virtual bool IsMPISave() const {return true;}
 
-	virtual std::string GetExtensionName() const
-	{
-		return std::string("Drude/Lorentz Dispersive Material Extension");
-	}
+	virtual string GetExtensionName() const {return string("Drude/Lorentz Dispersive Material Extension");}
 
-	virtual void ShowStat(std::ostream &ostr) const;
+	virtual void ShowStat(ostream &ostr) const;
 
 protected:
 	//! Copy constructor

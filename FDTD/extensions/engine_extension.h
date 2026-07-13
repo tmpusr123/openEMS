@@ -74,6 +74,18 @@ public:
 
 	virtual std::string GetExtensionName() const;
 
+#if WITH_CUDA
+	virtual void Prepare() {}
+
+	//! Whether this extension has a real on-device (CUDA) implementation of its
+	//! per-timestep hooks. Default false: on the CUDA engine the generic
+	//! host-side hooks run against device-resident fields that RunOneTimestep
+	//! never syncs, so the extension would SILENTLY produce wrong results.
+	//! Engine_cuda warns at setup for any active extension returning false.
+	//! Override to return true only once the extension is ported (has a .cu).
+	virtual bool IsCUDACapable() const {return false;}
+#endif
+
 protected:
 	Engine_Extension(Operator_Extension* op_ext);
 

@@ -21,6 +21,7 @@
 #include "engine_extension.h"
 #include "FDTD/engine.h"
 #include "FDTD/operator.h"
+#include "engine_extension_dispatcher.h"
 
 class Operator_Ext_SteadyState;
 class Engine_Interface_FDTD;
@@ -35,16 +36,37 @@ public:
 	virtual void Apply2Current();
 
 	void SetEngineInterface(Engine_Interface_FDTD* eng_if) {m_Eng_Interface=eng_if;}
-	double GetLastDiff() {return m_last_max_diff;}
+	double GetLastDiff();
+
+#if WITH_CUDA
+	// On-device steady-state detection: probe voltages are recorded into a device
+	// ring buffer every timestep (captured into the CUDA graph), and the period
+	// convergence metric (whole-grid energy diff + per-probe power diff) is
+	// computed on-device at each period boundary. GetLastDiff() reads it back.
+	struct ss_probe { int x, y, z, dir; };
+	virtual void SetEngine(Engine* eng);
+	virtual bool IsCUDACapable() const {return true;}
+#endif
 
 protected:
 	Operator_Ext_SteadyState* m_Op_SS;
 	double m_last_max_diff;
-	std::vector<double*> m_E_records;
-	std::vector<double*> m_H_records;
+	vector<double*> m_E_records;
+	vector<double*> m_H_records;
 
 	double last_total_energy;
 	Engine_Interface_FDTD* m_Eng_Interface;
+
+#if WITH_CUDA
+	void Apply2VoltagesCuda(Engine_cuda* eng);
+	int          m_n_probes = 0;
+	int          m_period = 0;                 // TS period p
+	ss_probe    *d_probes = NULL;              // probe cell + direction
+	FDTD_FLOAT  *d_records = NULL;             // ring buffer (n_probes * 2p)
+	double      *d_last_energy = NULL;         // energy at previous period boundary
+	double      *d_last_diff = NULL;           // computed convergence metric
+	int         *d_ss_valid = NULL;            // 0 until first metric written
+#endif
 };
 
 

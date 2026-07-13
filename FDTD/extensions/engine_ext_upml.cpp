@@ -19,7 +19,10 @@
 #include "operator_ext_upml.h"
 #include "FDTD/engine.h"
 #include "FDTD/engine_sse.h"
+#include "tools/array_ops.h"
 #include "tools/useful.h"
+
+
 
 Engine_Ext_UPML::Engine_Ext_UPML(Operator_Ext_UPML* op_ext) : Engine_Extension(op_ext)
 {
@@ -73,20 +76,20 @@ void Engine_Ext_UPML::DoPreVoltageUpdatesImpl(EngType* eng, int threadID)
 			{
 				pos[2] = loc_pos[2] + m_Op_UPML->m_StartPos[2];
 
-				f_help = m_Op_UPML->vv(0, loc_pos[0], loc_pos[1], loc_pos[2])   * eng->EngType::GetVolt(0,pos)
-						 - m_Op_UPML->vvfo(0, loc_pos[0], loc_pos[1], loc_pos[2]) * volt_flux(0, loc_pos[0], loc_pos[1], loc_pos[2]);
-				eng->EngType::SetVolt(0,pos, volt_flux(0, loc_pos[0], loc_pos[1], loc_pos[2]));
-				volt_flux(0, loc_pos[0], loc_pos[1], loc_pos[2]) = f_help;
+				f_help = m_Op_UPML->vv[0][loc_pos[0]][loc_pos[1]][loc_pos[2]]   * eng->EngType::GetVolt(0,pos)
+						 - m_Op_UPML->vvfo[0][loc_pos[0]][loc_pos[1]][loc_pos[2]] * volt_flux[0][loc_pos[0]][loc_pos[1]][loc_pos[2]];
+				eng->EngType::SetVolt(0,pos, volt_flux[0][loc_pos[0]][loc_pos[1]][loc_pos[2]]);
+				volt_flux[0][loc_pos[0]][loc_pos[1]][loc_pos[2]] = f_help;
 
-				f_help = m_Op_UPML->vv(1, loc_pos[0], loc_pos[1], loc_pos[2])   * eng->EngType::GetVolt(1,pos)
-						 - m_Op_UPML->vvfo(1, loc_pos[0], loc_pos[1], loc_pos[2]) * volt_flux(1, loc_pos[0], loc_pos[1], loc_pos[2]);
-				eng->EngType::SetVolt(1,pos, volt_flux(1, loc_pos[0], loc_pos[1], loc_pos[2]));
-				volt_flux(1, loc_pos[0], loc_pos[1], loc_pos[2]) = f_help;
+				f_help = m_Op_UPML->vv[1][loc_pos[0]][loc_pos[1]][loc_pos[2]]   * eng->EngType::GetVolt(1,pos)
+						 - m_Op_UPML->vvfo[1][loc_pos[0]][loc_pos[1]][loc_pos[2]] * volt_flux[1][loc_pos[0]][loc_pos[1]][loc_pos[2]];
+				eng->EngType::SetVolt(1,pos, volt_flux[1][loc_pos[0]][loc_pos[1]][loc_pos[2]]);
+				volt_flux[1][loc_pos[0]][loc_pos[1]][loc_pos[2]] = f_help;
 
-				f_help = m_Op_UPML->vv(2, loc_pos[0], loc_pos[1], loc_pos[2])   * eng->EngType::GetVolt(2,pos)
-						 - m_Op_UPML->vvfo(2, loc_pos[0], loc_pos[1], loc_pos[2]) * volt_flux(2, loc_pos[0], loc_pos[1], loc_pos[2]);
-				eng->EngType::SetVolt(2,pos, volt_flux(2, loc_pos[0], loc_pos[1], loc_pos[2]));
-				volt_flux(2, loc_pos[0], loc_pos[1], loc_pos[2]) = f_help;
+				f_help = m_Op_UPML->vv[2][loc_pos[0]][loc_pos[1]][loc_pos[2]]   * eng->EngType::GetVolt(2,pos)
+						 - m_Op_UPML->vvfo[2][loc_pos[0]][loc_pos[1]][loc_pos[2]] * volt_flux[2][loc_pos[0]][loc_pos[1]][loc_pos[2]];
+				eng->EngType::SetVolt(2,pos, volt_flux[2][loc_pos[0]][loc_pos[1]][loc_pos[2]]);
+				volt_flux[2][loc_pos[0]][loc_pos[1]][loc_pos[2]] = f_help;
 			}
 		}
 	}
@@ -120,17 +123,17 @@ void Engine_Ext_UPML::DoPostVoltageUpdatesImpl(EngType* eng, int threadID)
 			{
 				pos[2] = loc_pos[2] + m_Op_UPML->m_StartPos[2];
 
-				f_help = volt_flux(0, loc_pos[0], loc_pos[1], loc_pos[2]);
-				volt_flux(0, loc_pos[0], loc_pos[1], loc_pos[2]) = eng->EngType::GetVolt(0,pos);
-				eng->EngType::SetVolt(0,pos, f_help + m_Op_UPML->vvfn(0, loc_pos[0], loc_pos[1], loc_pos[2]) * volt_flux(0, loc_pos[0], loc_pos[1], loc_pos[2]));
+				f_help = volt_flux[0][loc_pos[0]][loc_pos[1]][loc_pos[2]];
+				volt_flux[0][loc_pos[0]][loc_pos[1]][loc_pos[2]] = eng->EngType::GetVolt(0,pos);
+				eng->EngType::SetVolt(0,pos, f_help + m_Op_UPML->vvfn[0][loc_pos[0]][loc_pos[1]][loc_pos[2]] * volt_flux[0][loc_pos[0]][loc_pos[1]][loc_pos[2]]);
 
-				f_help = volt_flux(1, loc_pos[0], loc_pos[1], loc_pos[2]);
-				volt_flux(1, loc_pos[0], loc_pos[1], loc_pos[2]) = eng->EngType::GetVolt(1,pos);
-				eng->EngType::SetVolt(1,pos, f_help + m_Op_UPML->vvfn(1, loc_pos[0], loc_pos[1], loc_pos[2]) * volt_flux(1, loc_pos[0], loc_pos[1], loc_pos[2]));
+				f_help = volt_flux[1][loc_pos[0]][loc_pos[1]][loc_pos[2]];
+				volt_flux[1][loc_pos[0]][loc_pos[1]][loc_pos[2]] = eng->EngType::GetVolt(1,pos);
+				eng->EngType::SetVolt(1,pos, f_help + m_Op_UPML->vvfn[1][loc_pos[0]][loc_pos[1]][loc_pos[2]] * volt_flux[1][loc_pos[0]][loc_pos[1]][loc_pos[2]]);
 
-				f_help = volt_flux(2, loc_pos[0], loc_pos[1], loc_pos[2]);
-				volt_flux(2, loc_pos[0], loc_pos[1], loc_pos[2]) = eng->EngType::GetVolt(2,pos);
-				eng->EngType::SetVolt(2,pos, f_help + m_Op_UPML->vvfn(2, loc_pos[0], loc_pos[1], loc_pos[2]) * volt_flux(2, loc_pos[0], loc_pos[1], loc_pos[2]));
+				f_help = volt_flux[2][loc_pos[0]][loc_pos[1]][loc_pos[2]];
+				volt_flux[2][loc_pos[0]][loc_pos[1]][loc_pos[2]] = eng->EngType::GetVolt(2,pos);
+				eng->EngType::SetVolt(2,pos, f_help + m_Op_UPML->vvfn[2][loc_pos[0]][loc_pos[1]][loc_pos[2]] * volt_flux[2][loc_pos[0]][loc_pos[1]][loc_pos[2]]);
 			}
 		}
 	}
@@ -164,20 +167,20 @@ void Engine_Ext_UPML::DoPreCurrentUpdatesImpl(EngType* eng, int threadID)
 			{
 				pos[2] = loc_pos[2] + m_Op_UPML->m_StartPos[2];
 
-				f_help = m_Op_UPML->ii(0, loc_pos[0], loc_pos[1], loc_pos[2])   * eng->EngType::GetCurr(0,pos)
-						 - m_Op_UPML->iifo(0, loc_pos[0], loc_pos[1], loc_pos[2]) * curr_flux(0, loc_pos[0], loc_pos[1], loc_pos[2]);
-				eng->EngType::SetCurr(0,pos, curr_flux(0, loc_pos[0], loc_pos[1], loc_pos[2]));
-				curr_flux(0, loc_pos[0], loc_pos[1], loc_pos[2]) = f_help;
+				f_help = m_Op_UPML->ii[0][loc_pos[0]][loc_pos[1]][loc_pos[2]]   * eng->EngType::GetCurr(0,pos)
+						 - m_Op_UPML->iifo[0][loc_pos[0]][loc_pos[1]][loc_pos[2]] * curr_flux[0][loc_pos[0]][loc_pos[1]][loc_pos[2]];
+				eng->EngType::SetCurr(0,pos, curr_flux[0][loc_pos[0]][loc_pos[1]][loc_pos[2]]);
+				curr_flux[0][loc_pos[0]][loc_pos[1]][loc_pos[2]] = f_help;
 
-				f_help = m_Op_UPML->ii(1, loc_pos[0], loc_pos[1], loc_pos[2])   * eng->EngType::GetCurr(1,pos)
-						 - m_Op_UPML->iifo(1, loc_pos[0], loc_pos[1], loc_pos[2]) * curr_flux(1, loc_pos[0], loc_pos[1], loc_pos[2]);
-				eng->EngType::SetCurr(1,pos, curr_flux(1, loc_pos[0], loc_pos[1], loc_pos[2]));
-				curr_flux(1, loc_pos[0], loc_pos[1], loc_pos[2]) = f_help;
+				f_help = m_Op_UPML->ii[1][loc_pos[0]][loc_pos[1]][loc_pos[2]]   * eng->EngType::GetCurr(1,pos)
+						 - m_Op_UPML->iifo[1][loc_pos[0]][loc_pos[1]][loc_pos[2]] * curr_flux[1][loc_pos[0]][loc_pos[1]][loc_pos[2]];
+				eng->EngType::SetCurr(1,pos, curr_flux[1][loc_pos[0]][loc_pos[1]][loc_pos[2]]);
+				curr_flux[1][loc_pos[0]][loc_pos[1]][loc_pos[2]] = f_help;
 
-				f_help = m_Op_UPML->ii(2, loc_pos[0], loc_pos[1], loc_pos[2])   * eng->EngType::GetCurr(2,pos)
-						 - m_Op_UPML->iifo(2, loc_pos[0], loc_pos[1], loc_pos[2]) * curr_flux(2, loc_pos[0], loc_pos[1], loc_pos[2]);
-				eng->EngType::SetCurr(2,pos, curr_flux(2, loc_pos[0], loc_pos[1], loc_pos[2]));
-				curr_flux(2, loc_pos[0], loc_pos[1], loc_pos[2]) = f_help;
+				f_help = m_Op_UPML->ii[2][loc_pos[0]][loc_pos[1]][loc_pos[2]]   * eng->EngType::GetCurr(2,pos)
+						 - m_Op_UPML->iifo[2][loc_pos[0]][loc_pos[1]][loc_pos[2]] * curr_flux[2][loc_pos[0]][loc_pos[1]][loc_pos[2]];
+				eng->EngType::SetCurr(2,pos, curr_flux[2][loc_pos[0]][loc_pos[1]][loc_pos[2]]);
+				curr_flux[2][loc_pos[0]][loc_pos[1]][loc_pos[2]] = f_help;
 
 			}
 		}
@@ -212,17 +215,17 @@ void Engine_Ext_UPML::DoPostCurrentUpdatesImpl(EngType* eng, int threadID)
 			{
 				pos[2] = loc_pos[2] + m_Op_UPML->m_StartPos[2];
 
-				f_help = curr_flux(0, loc_pos[0], loc_pos[1], loc_pos[2]);
-				curr_flux(0, loc_pos[0], loc_pos[1], loc_pos[2]) = eng->EngType::GetCurr(0,pos);
-				eng->EngType::SetCurr(0,pos, f_help + m_Op_UPML->iifn(0, loc_pos[0], loc_pos[1], loc_pos[2]) * curr_flux(0, loc_pos[0], loc_pos[1], loc_pos[2]));
+				f_help = curr_flux[0][loc_pos[0]][loc_pos[1]][loc_pos[2]];
+				curr_flux[0][loc_pos[0]][loc_pos[1]][loc_pos[2]] = eng->EngType::GetCurr(0,pos);
+				eng->EngType::SetCurr(0,pos, f_help + m_Op_UPML->iifn[0][loc_pos[0]][loc_pos[1]][loc_pos[2]] * curr_flux[0][loc_pos[0]][loc_pos[1]][loc_pos[2]]);
 
-				f_help = curr_flux(1, loc_pos[0], loc_pos[1], loc_pos[2]);
-				curr_flux(1, loc_pos[0], loc_pos[1], loc_pos[2]) = eng->EngType::GetCurr(1,pos);
-				eng->EngType::SetCurr(1,pos, f_help + m_Op_UPML->iifn(1, loc_pos[0], loc_pos[1], loc_pos[2]) * curr_flux(1, loc_pos[0], loc_pos[1], loc_pos[2]));
+				f_help = curr_flux[1][loc_pos[0]][loc_pos[1]][loc_pos[2]];
+				curr_flux[1][loc_pos[0]][loc_pos[1]][loc_pos[2]] = eng->EngType::GetCurr(1,pos);
+				eng->EngType::SetCurr(1,pos, f_help + m_Op_UPML->iifn[1][loc_pos[0]][loc_pos[1]][loc_pos[2]] * curr_flux[1][loc_pos[0]][loc_pos[1]][loc_pos[2]]);
 
-				f_help = curr_flux(2, loc_pos[0], loc_pos[1], loc_pos[2]);
-				curr_flux(2, loc_pos[0], loc_pos[1], loc_pos[2]) = eng->EngType::GetCurr(2,pos);
-				eng->EngType::SetCurr(2,pos, f_help + m_Op_UPML->iifn(2, loc_pos[0], loc_pos[1], loc_pos[2]) * curr_flux(2, loc_pos[0], loc_pos[1], loc_pos[2]));
+				f_help = curr_flux[2][loc_pos[0]][loc_pos[1]][loc_pos[2]];
+				curr_flux[2][loc_pos[0]][loc_pos[1]][loc_pos[2]] = eng->EngType::GetCurr(2,pos);
+				eng->EngType::SetCurr(2,pos, f_help + m_Op_UPML->iifn[2][loc_pos[0]][loc_pos[1]][loc_pos[2]] * curr_flux[2][loc_pos[0]][loc_pos[1]][loc_pos[2]]);
 			}
 		}
 	}

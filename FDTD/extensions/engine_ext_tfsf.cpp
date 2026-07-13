@@ -31,10 +31,23 @@ Engine_Ext_TFSF::~Engine_Ext_TFSF()
 {
 	delete[] m_DelayLookup;
 	m_DelayLookup = NULL;
+
+#if WITH_CUDA
+	if (d_volt_taps) cudaFree(d_volt_taps);
+	if (d_curr_taps) cudaFree(d_curr_taps);
+	if (d_sig_volt)  cudaFree(d_sig_volt);
+	if (d_sig_curr)  cudaFree(d_sig_curr);
+#endif
 }
 
 void Engine_Ext_TFSF::DoPostVoltageUpdates()
 {
+#if WITH_CUDA
+	if (m_Eng->GetType() == Engine::CUDA) {
+		DoPostVoltageUpdatesCuda(static_cast<Engine_cuda*>(m_Eng));
+		return;
+	}
+#endif
 	unsigned int numTS = m_Eng->GetNumberOfTimesteps();
 	unsigned int length = m_Op_TFSF->m_Exc->GetLength();
 
@@ -125,6 +138,12 @@ void Engine_Ext_TFSF::DoPostVoltageUpdates()
 
 void Engine_Ext_TFSF::DoPostCurrentUpdates()
 {
+#if WITH_CUDA
+	if (m_Eng->GetType() == Engine::CUDA) {
+		DoPostCurrentUpdatesCuda(static_cast<Engine_cuda*>(m_Eng));
+		return;
+	}
+#endif
 	unsigned int numTS = m_Eng->GetNumberOfTimesteps();
 	unsigned int length = m_Op_TFSF->m_Exc->GetLength();
 

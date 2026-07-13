@@ -40,10 +40,7 @@ public:
 	virtual bool IsCylindricalMultiGridSave(bool child) const {UNUSED(child); return true;}
 	virtual bool IsMPISave() const {return true;}
 
-	virtual std::string GetExtensionName() const
-	{
-		return std::string("Conducting Sheet Extension");
-	}
+	virtual string GetExtensionName() const {return string("Conducting Sheet Extension");}
 
 protected:
 	//! Copy constructor

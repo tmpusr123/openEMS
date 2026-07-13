@@ -49,18 +49,15 @@ public:
 
 	virtual bool BuildExtension();
 
-	virtual Engine_Extension* CreateEngineExtention();
+	virtual Engine_Extension* CreateEngineExtention(Engine *engine);
 
 	virtual bool IsCylinderCoordsSave(bool closedAlpha, bool R0_included) const;
 	virtual bool IsCylindricalMultiGridSave(bool child) const;
 	virtual bool IsMPISave() const {return true;}
 
-	virtual std::string GetExtensionName() const
-	{
-		return std::string("Mur ABC Extension");
-	}
+	virtual string GetExtensionName() const {return string("Mur ABC Extension");}
 
-	virtual void ShowStat(std::ostream &ostr) const;
+	virtual void ShowStat(ostream &ostr) const;
 
 protected:
 	Operator_Ext_Mur_ABC(Operator* op, Operator_Ext_Mur_ABC* op_ext);

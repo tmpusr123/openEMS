@@ -23,10 +23,6 @@
 #include "CSPrimCurve.h"
 #include "CSPropExcitation.h"
 
-using std::cout;
-using std::cerr;
-using std::endl;
-
 Operator_Ext_Excitation::Operator_Ext_Excitation(Operator* op) : Operator_Extension(op)
 {
 	Init();
@@ -117,19 +113,19 @@ bool Operator_Ext_Excitation::BuildExtension()
 	unsigned int pos[3];
 	double amp=0;
 
-	std::vector<unsigned int> volt_vIndex[3];
-	std::vector<FDTD_FLOAT> volt_vExcit;
-	std::vector<unsigned int> volt_vDelay;
-	std::vector<unsigned int> volt_vDir;
+	vector<unsigned int> volt_vIndex[3];
+	vector<FDTD_FLOAT> volt_vExcit;
+	vector<unsigned int> volt_vDelay;
+	vector<unsigned int> volt_vDir;
 	double volt_coord[3];
 
-	std::vector<unsigned int> curr_vIndex[3];
-	std::vector<FDTD_FLOAT> curr_vExcit;
-	std::vector<unsigned int> curr_vDelay;
-	std::vector<unsigned int> curr_vDir;
+	vector<unsigned int> curr_vIndex[3];
+	vector<FDTD_FLOAT> curr_vExcit;
+	vector<unsigned int> curr_vDelay;
+	vector<unsigned int> curr_vDir;
 	double curr_coord[3];
 
-	std::vector<CSProperties*> vec_prop = CSX->GetPropertyByType(CSProperties::EXCITATION);
+	vector<CSProperties*> vec_prop = CSX->GetPropertyByType(CSProperties::EXCITATION);
 
 	if (vec_prop.size()==0)
 	{
@@ -145,11 +141,7 @@ bool Operator_Ext_Excitation::BuildExtension()
 	{
 		for (pos[1]=0; pos[1]<numLines[1]; ++pos[1])
 		{
-			std::vector<CSPrimitives*> vPrims = m_Op->GetPrimitivesBoundBox(
-				-1, pos[1], pos[2],
-				CSProperties::EXCITATION
-			);
-
+			vector<CSPrimitives*> vPrims = m_Op->GetPrimitivesBoundBox(-1, pos[1], pos[2], CSProperties::EXCITATION);
 			for (pos[0]=0; pos[0]<numLines[0]; ++pos[0])
 			{
 				//electric field excite
@@ -296,12 +288,8 @@ bool Operator_Ext_Excitation::BuildExtension()
 	return true;
 }
 
-void Operator_Ext_Excitation::setupVoltageExcitation(
-	std::vector<unsigned int> const volt_vIndex[3],
-	std::vector<FDTD_FLOAT> const& volt_vExcit,
-	std::vector<unsigned int> const& volt_vDelay,
-	std::vector<unsigned int> const& volt_vDir
-)
+void Operator_Ext_Excitation::setupVoltageExcitation( vector<unsigned int> const volt_vIndex[3], vector<FDTD_FLOAT> const& volt_vExcit,
+		vector<unsigned int> const& volt_vDelay, vector<unsigned int> const& volt_vDir )
 {
 	Volt_Count = volt_vIndex[0].size();
 	for (int n=0; n<3; n++)
@@ -317,6 +305,9 @@ void Operator_Ext_Excitation::setupVoltageExcitation(
 	Volt_amp = new FDTD_FLOAT[Volt_Count];
 	Volt_dir = new unsigned short[Volt_Count];
 
+//	cerr << "Excitation::setupVoltageExcitation(): Number of voltage excitation points: " << Volt_Count << endl;
+//	if (Volt_Count==0)
+//		cerr << "No E-Field/voltage excitation found!" << endl;
 	for (int n=0; n<3; n++)
 		for (unsigned int i=0; i<Volt_Count; i++)
 			Volt_index[n][i] = volt_vIndex[n].at(i);
@@ -329,12 +320,8 @@ void Operator_Ext_Excitation::setupVoltageExcitation(
 	}
 }
 
-void Operator_Ext_Excitation::setupCurrentExcitation(
-	std::vector<unsigned int> const curr_vIndex[3],
-	std::vector<FDTD_FLOAT> const& curr_vExcit,
-	std::vector<unsigned int> const& curr_vDelay,
-	std::vector<unsigned int> const& curr_vDir
-)
+void Operator_Ext_Excitation::setupCurrentExcitation( vector<unsigned int> const curr_vIndex[3], vector<FDTD_FLOAT> const& curr_vExcit,
+		vector<unsigned int> const& curr_vDelay, vector<unsigned int> const& curr_vDir )
 {
 	Curr_Count = curr_vIndex[0].size();
 	for (int n=0; n<3; n++)
@@ -350,6 +337,9 @@ void Operator_Ext_Excitation::setupCurrentExcitation(
 	Curr_amp = new FDTD_FLOAT[Curr_Count];
 	Curr_dir = new unsigned short[Curr_Count];
 
+//	cerr << "Excitation::setupCurrentExcitation(): Number of current excitation points: " << Curr_Count << endl;
+//	if (Curr_Count==0)
+//		cerr << "No H-Field/current excitation found!" << endl;
 	for (int n=0; n<3; ++n)
 		for (unsigned int i=0; i<Curr_Count; i++)
 			Curr_index[n][i] = curr_vIndex[n].at(i);
@@ -363,12 +353,12 @@ void Operator_Ext_Excitation::setupCurrentExcitation(
 
 }
 
-Engine_Extension* Operator_Ext_Excitation::CreateEngineExtention()
+Engine_Extension* Operator_Ext_Excitation::CreateEngineExtention(Engine *engine)
 {
 	return new Engine_Ext_Excitation(this);
 }
 
-void Operator_Ext_Excitation::ShowStat(std::ostream &ostr)  const
+void Operator_Ext_Excitation::ShowStat(ostream &ostr)  const
 {
 	Operator_Extension::ShowStat(ostr);
 	cout << "Voltage excitations\t: " << Volt_Count    << "\t (" << Volt_Count_Dir[0] << ", " << Volt_Count_Dir[1] << ", " << Volt_Count_Dir[2] << ")" << endl;

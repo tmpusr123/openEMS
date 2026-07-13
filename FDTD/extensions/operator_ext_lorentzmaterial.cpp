@@ -23,9 +23,6 @@
 #include "CSPropLorentzMaterial.h"
 #include "CSPropDebyeMaterial.h"
 
-using std::cerr;
-using std::endl;
-
 Operator_Ext_LorentzMaterial::Operator_Ext_LorentzMaterial(Operator* op) : Operator_Ext_Dispersive(op)
 {
 	v_int_ADE = NULL;
@@ -56,8 +53,6 @@ Operator_Ext_LorentzMaterial::Operator_Ext_LorentzMaterial(Operator* op, Operato
 
 Operator_Ext_LorentzMaterial::~Operator_Ext_LorentzMaterial()
 {
-	if ((m_curr_Lor_ADE_On==NULL) || (m_volt_Lor_ADE_On==NULL)) // all data already cleaned up or never used
-		return;
 	for (int i=0;i<m_Order;++i)
 	{
 		for (int n=0; n<3; ++n)
@@ -114,6 +109,8 @@ Operator_Ext_LorentzMaterial::~Operator_Ext_LorentzMaterial()
 
 Operator_Extension* Operator_Ext_LorentzMaterial::Clone(Operator* op)
 {
+	if (dynamic_cast<Operator_Ext_LorentzMaterial*>(this)==NULL)
+		return NULL;
 	return new Operator_Ext_LorentzMaterial(op, this);
 }
 
@@ -129,26 +126,26 @@ bool Operator_Ext_LorentzMaterial::BuildExtension()
 	bool warn_once = true;
 
 	bool b_pos_on;
-	std::vector<unsigned int> v_pos[3];
+	vector<unsigned int> v_pos[3];
 
 	// drude material parameter
 	double w_plasma,t_relax;
 	double L_D[3], C_D[3];
 	double R_D[3], G_D[3];
-	std::vector<double> v_int[3];
-	std::vector<double> v_ext[3];
-	std::vector<double> i_int[3];
-	std::vector<double> i_ext[3];
+	vector<double> v_int[3];
+	vector<double> v_ext[3];
+	vector<double> i_int[3];
+	vector<double> i_ext[3];
 
 	//additional Dorentz material parameter
 	double w_Lor_Pol;
 	double C_L[3];
 	double L_L[3];
-	std::vector<double> v_Lor[3];
-	std::vector<double> i_Lor[3];
+	vector<double> v_Lor[3];
+	vector<double> i_Lor[3];
 
 	m_Order = 0;
-	std::vector<CSProperties*> LD_props = m_Op->CSX->GetPropertyByType(CSProperties::LORENTZMATERIAL);
+	vector<CSProperties*> LD_props = m_Op->CSX->GetPropertyByType(CSProperties::LORENTZMATERIAL);
 	for (size_t n=0;n<LD_props.size();++n)
 	{
 		CSPropLorentzMaterial* LorMat = dynamic_cast<CSPropLorentzMaterial*>(LD_props.at(n));
@@ -207,11 +204,7 @@ bool Operator_Ext_LorentzMaterial::BuildExtension()
 		{
 			for (pos[1]=0; pos[1]<numLines[1]; ++pos[1])
 			{
-				std::vector<CSPrimitives*> vPrims = m_Op->GetPrimitivesBoundBox(
-					pos[0], pos[1], -1,
-					(CSProperties::PropertyType)(CSProperties::MATERIAL | CSProperties::METAL)
-				);
-
+				vector<CSPrimitives*> vPrims = m_Op->GetPrimitivesBoundBox(pos[0], pos[1], -1, (CSProperties::PropertyType)(CSProperties::MATERIAL | CSProperties::METAL));
 				for (pos[2]=0; pos[2]<numLines[2]; ++pos[2])
 				{
 					unsigned int index = m_Op->MainOp->SetPos(pos[0],pos[1],pos[2]);
@@ -444,16 +437,16 @@ bool Operator_Ext_LorentzMaterial::BuildExtension()
 	return true;
 }
 
-Engine_Extension* Operator_Ext_LorentzMaterial::CreateEngineExtention()
+Engine_Extension* Operator_Ext_LorentzMaterial::CreateEngineExtention(Engine *engine)
 {
 	Engine_Ext_LorentzMaterial* eng_ext_lor = new Engine_Ext_LorentzMaterial(this);
 	return eng_ext_lor;
 }
 
-void Operator_Ext_LorentzMaterial::ShowStat(std::ostream &ostr)  const
+void Operator_Ext_LorentzMaterial::ShowStat(ostream &ostr)  const
 {
 	Operator_Extension::ShowStat(ostr);
-	std::string On_Off[2] = {"Off", "On"};
+	string On_Off[2] = {"Off", "On"};
 	ostr << " Max. Dispersion Order N = " << m_Order << endl;
 	for (int i=0;i<m_Order;++i)
 	{

@@ -45,10 +45,40 @@ Engine_Ext_SteadyState::~Engine_Ext_SteadyState()
 	m_E_records.clear();
 	delete m_Eng_Interface;
 	m_Eng_Interface = NULL;
+
+#if WITH_CUDA
+	if (d_probes)      cudaFree(d_probes);
+	if (d_records)     cudaFree(d_records);
+	if (d_last_energy) cudaFree(d_last_energy);
+	if (d_last_diff)   cudaFree(d_last_diff);
+	if (d_ss_valid)    cudaFree(d_ss_valid);
+#endif
+}
+
+double Engine_Ext_SteadyState::GetLastDiff()
+{
+#if WITH_CUDA
+	if (m_Eng && m_Eng->GetType() == Engine::CUDA && d_last_diff && m_n_probes > 0)
+	{
+		// The device metric kernel already ran (and synced) during IterateTS;
+		// pull the latest period-boundary convergence value back to the host.
+		double dev_diff = 1.0;
+		cudaMemcpy(&dev_diff, d_last_diff, sizeof(double), cudaMemcpyDeviceToHost);
+		m_last_max_diff = dev_diff;
+	}
+#endif
+	return m_last_max_diff;
 }
 
 void Engine_Ext_SteadyState::Apply2Voltages()
 {
+#if WITH_CUDA
+	if (m_Eng->GetType() == Engine::CUDA) {
+		if (m_n_probes > 0)
+			Apply2VoltagesCuda(static_cast<Engine_cuda*>(m_Eng));
+		return;
+	}
+#endif
 	unsigned int p = m_Op_SS->m_TS_period;
 	unsigned int TS = m_Eng->GetNumberOfTimesteps();
 	unsigned int rel_pos = m_Eng->GetNumberOfTimesteps()%(2*p);
@@ -87,14 +117,14 @@ void Engine_Ext_SteadyState::Apply2Voltages()
 				curr_pow[n] += buf[nt+new_pos]*buf[nt+new_pos];
 				diff_pow[n] += (buf[nt+old_pos]-buf[nt+new_pos])*(buf[nt+old_pos]-buf[nt+new_pos]);
 			}
-			max_pow = std::max(max_pow, curr_pow[n]);
+			max_pow = max(max_pow, curr_pow[n]);
 		}
 		for (size_t n=0;n<m_E_records.size();++n)
 		{
 			//cerr << "curr_pow: " << curr_pow[n] <<  " diff_pow: " << diff_pow[n] << " diff: " << diff_pow[n]/curr_pow[n] << endl;
 			if (curr_pow[n]>max_pow*1e-2)
 			{
-				m_last_max_diff = std::max(m_last_max_diff, diff_pow[n]/curr_pow[n]);
+				m_last_max_diff = max(m_last_max_diff, diff_pow[n]/curr_pow[n]);
 				//cerr << m_last_max_diff << endl;
 				no_valid = false;
 			}

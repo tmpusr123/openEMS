@@ -18,10 +18,6 @@
 #include "FDTD/engine.h"
 #include "engine_ext_cylindermultigrid.h"
 #include "FDTD/engine_cylindermultigrid.h"
-#include <stdexcept>
-
-using std::cerr;
-using std::endl;
 
 Engine_Ext_CylinderMultiGrid::Engine_Ext_CylinderMultiGrid(Operator_Extension* op_ext, bool isBase) : Engine_Extension(op_ext)
 {
@@ -47,13 +43,20 @@ void Engine_Ext_CylinderMultiGrid::SetEngine(Engine* eng)
 {
 	m_Eng_MG = dynamic_cast<Engine_CylinderMultiGrid*>(eng);
 	if (m_Eng_MG==NULL)
-		throw std::runtime_error("Engine_Ext_CylinderMultiGrid::SetEngine(): Error: engine is not a CylinderMultiGrid engine");
+	{
+		cerr << "Engine_Ext_CylinderMultiGrid::SetEngine(): Error" << endl;
+		exit(0);
+	}
 }
 
 void Engine_Ext_CylinderMultiGrid::DoPreVoltageUpdates()
 {
+	//cerr << "Engine_Ext_CylinderMultiGrid::DoPreVoltageUpdates() for " << m_IsBase << endl;
 	if (!m_IsBase)
+	{
+		//cerr << "child: volt wait on base " << endl;
 		m_WaitOnBase->wait(); //wait on base to finish current sync and/or to finish voltage updates, than start child voltage updates
+	}
 }
 
 void Engine_Ext_CylinderMultiGrid::DoPostVoltageUpdates()
@@ -107,22 +110,26 @@ void Engine_Ext_CylinderMultiGrid::SyncVoltages()
 			ArrayLib::ArrayNIJK<f4vector>& innerEng_f4_volt = *m_InnerEng->f4_volt_ptr;
 
 			//r - direczion
-			innerEng_f4_volt(0, pos[0], pos1_half, pos[2]).v = v_null.v;
+			innerEng_f4_volt[0][pos[0]][pos1_half][pos[2]].v = v_null.v;
 
 			//z - direction
-			innerEng_f4_volt(2, pos[0], pos1_half, pos[2]).v = mgEng_f4_volt(2, pos[0], pos[1], pos[2]).v;
+			innerEng_f4_volt[2][pos[0]][pos1_half][pos[2]].v = mgEng_f4_volt[2][pos[0]][pos[1]][pos[2]].v;
 
 			//alpha - direction
-			innerEng_f4_volt(1, pos[0], pos1_half, pos[2]).v  = mgEng_f4_volt(1, pos[0], pos[1]  , pos[2]).v;
-			innerEng_f4_volt(1, pos[0], pos1_half, pos[2]).v += mgEng_f4_volt(1, pos[0], pos[1]+1, pos[2]).v;
+			innerEng_f4_volt[1][pos[0]][pos1_half][pos[2]].v  = mgEng_f4_volt[1][pos[0]][pos[1]][pos[2]].v;
+			innerEng_f4_volt[1][pos[0]][pos1_half][pos[2]].v += mgEng_f4_volt[1][pos[0]][pos[1]+1][pos[2]].v;
 		}
 	}
 }
 
 void Engine_Ext_CylinderMultiGrid::DoPreCurrentUpdates()
 {
+	//cerr << "Engine_Ext_CylinderMultiGrid::DoPreCurrentUpdates() for " << m_IsBase << endl;
 	if (!m_IsBase)
+	{
+		//cerr << "child: curr wait on base " << endl;
 		m_WaitOnBase->wait(); //wait on base to finish voltage sync and current updates, than start child current updates
+	}
 }
 
 void Engine_Ext_CylinderMultiGrid::DoPostCurrentUpdates()

@@ -21,6 +21,7 @@
 
 #include "FDTD/engine.h"
 #include "FDTD/engine_sse.h"
+#include "FDTD/engine_cuda.h"
 
 // In openEMS, all extensions are subclasses from the abstract Engine_Extension
 // to implement features like Engine_Extension::Apply2Voltages(). When an
@@ -64,6 +65,9 @@
 	case Engine::BASIC: \
 		(this)->template impl<Engine>((Engine*) m_Eng); \
 		break; \
+	case Engine::CUDA: \
+		(this)->template impl<Engine_cuda>((Engine_cuda*) m_Eng); \
+		break; \
 	default: \
 		/* requires change here if a new engine is added. */ \
 		throw std::runtime_error( \
@@ -79,6 +83,9 @@
 		break; \
 	case Engine::BASIC: \
 		(this)->template impl<Engine>((Engine*) m_Eng, __VA_ARGS__); \
+		break; \
+	case Engine::CUDA: \
+		(this)->template impl<Engine_cuda>((Engine_cuda*) m_Eng, __VA_ARGS__); \
 		break; \
 	default: \
 		/* requires change here if a new engine is added. */ \
