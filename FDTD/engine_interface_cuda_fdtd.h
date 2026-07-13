@@ -1,5 +1,6 @@
 /*
-*	Copyright (C) 2012 Thorsten Liebig (Thorsten.Liebig@gmx.de)
+
+*	Copyright (C) 2025 Tommy Gu (radiotommy@gmail.com)
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -15,24 +16,24 @@
 *	along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "engine_cylinder.h"
+#ifndef ENGINE_INTERFACE_CUDA_FDTD_H
+#define ENGINE_INTERFACE_CUDA_FDTD_H
 
-Engine_Cylinder::Engine_Cylinder(const Operator_Cylinder* op) : Engine_Multithread(op)
+#include "engine_interface_fdtd.h"
+#include "operator_cuda.h"
+#include "engine_cuda.h"
+
+class Engine_Interface_CUDA_FDTD : public Engine_Interface_FDTD
 {
-	m_Op_Cyl = op;
-}
+public:
+	Engine_Interface_CUDA_FDTD(Operator_CUDA* op);
+	virtual ~Engine_Interface_CUDA_FDTD();
 
-Engine_Cylinder::~Engine_Cylinder()
-{
+	virtual double CalcFastEnergy() const;
 
-}
+protected:
+	Operator_CUDA* m_Op_CUDA;
+	Engine_cuda* m_Eng_CUDA;
+};
 
-Engine_Cylinder* Engine_Cylinder::New(const Operator_Cylinder* op, unsigned int numThreads)
-{
-	cout << "Create FDTD engine (cylindrical mesh using sse compression + multithreading)" << endl;
-	Engine_Cylinder* e = new Engine_Cylinder(op);
-	e->setNumThreads(numThreads);
-	e->Init();
-	return e;
-}
-
+#endif // ENGINE_INTERFACE_SSE_FDTD_H

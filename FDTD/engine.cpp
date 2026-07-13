@@ -18,9 +18,7 @@
 #include "engine.h"
 #include "extensions/engine_extension.h"
 #include "extensions/operator_extension.h"
-
-using std::cout;
-using std::endl;
+#include "tools/array_ops.h"
 
 //! \brief construct an Engine instance
 //! it's the responsibility of the caller to free the returned pointer
@@ -63,7 +61,7 @@ void Engine::InitExtensions()
 	for (size_t n=0; n<Op->GetNumberOfExtentions(); ++n)
 	{
 		Operator_Extension* op_ext = Op->GetExtension(n);
-		Engine_Extension* eng_ext = op_ext->CreateEngineExtention();
+		Engine_Extension* eng_ext = op_ext->CreateEngineExtention(this);
 		if (eng_ext)
 		{
 			eng_ext->SetEngine(this);
@@ -130,36 +128,36 @@ void Engine::UpdateVoltages(unsigned int startX, unsigned int numX)
 				shift[2]=pos[2];
 				//do the updates here
 				//for x
-				volt(0, pos[0], pos[1], pos[2]) *=
-				    vv(0, pos[0], pos[1], pos[2]);
-				volt(0, pos[0], pos[1], pos[2]) +=
-				    vi(0, pos[0], pos[1], pos[2]) * (
-				        curr(2, pos[0], pos[1]         , pos[2]         ) -
-				        curr(2, pos[0], pos[1]-shift[1], pos[2]         ) -
-				        curr(1, pos[0], pos[1]         , pos[2]         ) +
-				        curr(1, pos[0], pos[1]         , pos[2]-shift[2])
+				volt[0][pos[0]][pos[1]][pos[2]] *=
+				    vv[0][pos[0]][pos[1]][pos[2]];
+				volt[0][pos[0]][pos[1]][pos[2]] +=
+				    vi[0][pos[0]][pos[1]][pos[2]] * (
+				        curr[2][pos[0]][pos[1]         ][pos[2]         ] -
+				        curr[2][pos[0]][pos[1]-shift[1]][pos[2]         ] -
+				        curr[1][pos[0]][pos[1]         ][pos[2]         ] +
+				        curr[1][pos[0]][pos[1]         ][pos[2]-shift[2]]
 				    );
 
 				//for y
-				volt(1, pos[0], pos[1], pos[2]) *=
-				    vv(1, pos[0], pos[1], pos[2]);
-				volt(1, pos[0], pos[1], pos[2]) +=
-				    vi(1, pos[0], pos[1], pos[2]) * (
-				        curr(0, pos[0]         , pos[1], pos[2]         ) -
-				        curr(0, pos[0]         , pos[1], pos[2]-shift[2]) -
-				        curr(2, pos[0]         , pos[1], pos[2]         ) +
-				        curr(2, pos[0]-shift[0], pos[1], pos[2]         )
+				volt[1][pos[0]][pos[1]][pos[2]] *=
+				    vv[1][pos[0]][pos[1]][pos[2]];
+				volt[1][pos[0]][pos[1]][pos[2]] +=
+				    vi[1][pos[0]][pos[1]][pos[2]] * (
+				        curr[0][pos[0]         ][pos[1]][pos[2]         ] -
+				        curr[0][pos[0]         ][pos[1]][pos[2]-shift[2]] -
+				        curr[2][pos[0]         ][pos[1]][pos[2]         ] +
+				        curr[2][pos[0]-shift[0]][pos[1]][pos[2]         ]
 				    );
 
 				//for z
-				volt(2, pos[0], pos[1], pos[2]) *=
-				    vv(2, pos[0], pos[1], pos[2]);
-				volt(2, pos[0], pos[1], pos[2]) +=
-				    vi(2, pos[0], pos[1], pos[2]) * (
-				        curr(1, pos[0]         , pos[1]         , pos[2]) -
-				        curr(1, pos[0]-shift[0], pos[1]         , pos[2]) -
-				        curr(0, pos[0]         , pos[1]         , pos[2]) +
-				        curr(0, pos[0]         , pos[1]-shift[1], pos[2])
+				volt[2][pos[0]][pos[1]][pos[2]] *=
+				    vv[2][pos[0]][pos[1]][pos[2]];
+				volt[2][pos[0]][pos[1]][pos[2]] +=
+				    vi[2][pos[0]][pos[1]][pos[2]] * (
+				        curr[1][pos[0]         ][pos[1]         ][pos[2]] -
+				        curr[1][pos[0]-shift[0]][pos[1]         ][pos[2]] -
+				        curr[0][pos[0]         ][pos[1]         ][pos[2]] +
+				        curr[0][pos[0]         ][pos[1]-shift[1]][pos[2]]
 				    );
 			}
 		}
@@ -184,36 +182,36 @@ void Engine::UpdateCurrents(unsigned int startX, unsigned int numX)
 			{
 				//do the updates here
 				//for x
-				curr(0, pos[0], pos[1], pos[2]) *=
-				    ii(0, pos[0], pos[1], pos[2]);
-				curr(0, pos[0], pos[1], pos[2]) +=
-				    iv(0, pos[0], pos[1], pos[2]) * (
-				        volt(2, pos[0], pos[1]  , pos[2]  ) -
-				        volt(2, pos[0], pos[1]+1, pos[2]  ) -
-				        volt(1, pos[0], pos[1]  , pos[2]  ) +
-				        volt(1, pos[0], pos[1]  , pos[2]+1)
+				curr[0][pos[0]][pos[1]][pos[2]] *=
+				    ii[0][pos[0]][pos[1]][pos[2]];
+				curr[0][pos[0]][pos[1]][pos[2]] +=
+				    iv[0][pos[0]][pos[1]][pos[2]] * (
+				        volt[2][pos[0]][pos[1]  ][pos[2]  ] -
+				        volt[2][pos[0]][pos[1]+1][pos[2]  ] -
+				        volt[1][pos[0]][pos[1]  ][pos[2]  ] +
+				        volt[1][pos[0]][pos[1]  ][pos[2]+1]
 				    );
 
 				//for y
-				curr(1, pos[0], pos[1], pos[2]) *=
-				    ii(1, pos[0], pos[1], pos[2]);
-				curr(1, pos[0], pos[1], pos[2]) +=
-				    iv(1, pos[0], pos[1], pos[2]) * (
-				        volt(0, pos[0]  , pos[1], pos[2]  ) -
-				        volt(0, pos[0]  , pos[1], pos[2]+1) -
-				        volt(2, pos[0]  , pos[1], pos[2]  ) +
-				        volt(2, pos[0]+1, pos[1], pos[2]  )
+				curr[1][pos[0]][pos[1]][pos[2]] *=
+				    ii[1][pos[0]][pos[1]][pos[2]];
+				curr[1][pos[0]][pos[1]][pos[2]] +=
+				    iv[1][pos[0]][pos[1]][pos[2]] * (
+				        volt[0][pos[0]  ][pos[1]][pos[2]  ] -
+				        volt[0][pos[0]  ][pos[1]][pos[2]+1] -
+				        volt[2][pos[0]  ][pos[1]][pos[2]  ] +
+				        volt[2][pos[0]+1][pos[1]][pos[2]  ]
 				    );
 
 				//for z
-				curr(2, pos[0], pos[1], pos[2]) *=
-				    ii(2, pos[0], pos[1], pos[2]);
-				curr(2, pos[0], pos[1], pos[2]) +=
-				    iv(2, pos[0], pos[1], pos[2]) * (
-				        volt(1, pos[0]  , pos[1]  , pos[2]) -
-				        volt(1, pos[0]+1, pos[1]  , pos[2]) -
-				        volt(0, pos[0]  , pos[1]  , pos[2]) +
-				        volt(0, pos[0]  , pos[1]+1, pos[2])
+				curr[2][pos[0]][pos[1]][pos[2]] *=
+				    ii[2][pos[0]][pos[1]][pos[2]];
+				curr[2][pos[0]][pos[1]][pos[2]] +=
+				    iv[2][pos[0]][pos[1]][pos[2]] * (
+				        volt[1][pos[0]  ][pos[1]  ][pos[2]] -
+				        volt[1][pos[0]+1][pos[1]  ][pos[2]] -
+				        volt[0][pos[0]  ][pos[1]  ][pos[2]] +
+				        volt[0][pos[0]  ][pos[1]+1][pos[2]]
 				    );
 			}
 		}

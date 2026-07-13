@@ -19,10 +19,6 @@
 #include "engine_multithread.h"
 #include "tools/useful.h"
 
-using std::cout;
-using std::cerr;
-using std::endl;
-
 Operator_Multithread* Operator_Multithread::New(unsigned int numThreads)
 {
 	cout << "Create FDTD operator (compressed SSE + multi-threading)" << endl;
@@ -90,13 +86,9 @@ void Operator_Multithread::Reset()
 	OPERATOR_MULTITHREAD_BASE::Reset();
 }
 
-void Operator_Multithread::CalcStartStopLines(
-	unsigned int &numThreads,
-	std::vector<unsigned int> &start,
-	std::vector<unsigned int> &stop
-) const
+void Operator_Multithread::CalcStartStopLines(unsigned int &numThreads, vector<unsigned int> &start, vector<unsigned int> &stop) const
 {
-	std::vector<unsigned int> jpt = AssignJobs2Threads(numLines[0], numThreads, true);
+	vector<unsigned int> jpt = AssignJobs2Threads(numLines[0], numThreads, true);
 
 	numThreads = jpt.size();
 
@@ -118,8 +110,8 @@ int Operator_Multithread::CalcECOperator( DebugFlags debugFlags )
 	if ((m_numThreads == 0) || (m_numThreads > boost::thread::hardware_concurrency()))
 		m_numThreads = boost::thread::hardware_concurrency();
 
-	std::vector<unsigned int> m_Start_Lines;
-	std::vector<unsigned int> m_Stop_Lines;
+	vector<unsigned int> m_Start_Lines;
+	vector<unsigned int> m_Stop_Lines;
 	CalcStartStopLines( m_numThreads, m_Start_Lines, m_Stop_Lines );
 
 	if (g_settings.GetVerboseLevel()>0)

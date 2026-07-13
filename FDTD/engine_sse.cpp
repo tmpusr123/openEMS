@@ -18,9 +18,6 @@
 #include "engine_sse.h"
 #include "tools/denormal.h"
 
-using std::cout;
-using std::endl;
-
 //! \brief construct an Engine_sse instance
 //! it's the responsibility of the caller to free the returned pointer
 Engine_sse* Engine_sse::New(const Operator_sse* op)
@@ -59,10 +56,10 @@ void Engine_sse::Init()
 	delete curr_ptr;
 	curr_ptr = NULL;
 
-	f4_volt_ptr = new ArrayLib::ArrayENG<f4vector>(
+	f4_volt_ptr = new ArrayLib::ArrayNIJK<f4vector>(
 		"f4_volt", {numLines[0], numLines[1], numVectors}
 	);
-	f4_curr_ptr = new ArrayLib::ArrayENG<f4vector>(
+	f4_curr_ptr = new ArrayLib::ArrayNIJK<f4vector>(
 		"f4_curr", {numLines[0], numLines[1], numVectors}
 	);
 }
@@ -78,10 +75,10 @@ void Engine_sse::Reset()
 
 void Engine_sse::UpdateVoltages(unsigned int startX, unsigned int numX)
 {
-	ArrayLib::ArrayENG<f4vector>& f4_volt = *f4_volt_ptr;
-	ArrayLib::ArrayENG<f4vector>& f4_curr = *f4_curr_ptr;
-	ArrayLib::ArrayENG<f4vector>& f4_vv = *Op->f4_vv_ptr;
-	ArrayLib::ArrayENG<f4vector>& f4_vi = *Op->f4_vi_ptr;
+	ArrayLib::ArrayNIJK<f4vector>& f4_volt = *f4_volt_ptr;
+	ArrayLib::ArrayNIJK<f4vector>& f4_curr = *f4_curr_ptr;
+	ArrayLib::ArrayNIJK<f4vector>& f4_vv = *Op->f4_vv_ptr;
+	ArrayLib::ArrayNIJK<f4vector>& f4_vi = *Op->f4_vi_ptr;
 
 	unsigned int pos[3];
 	bool shift[2];
@@ -97,79 +94,79 @@ void Engine_sse::UpdateVoltages(unsigned int startX, unsigned int numX)
 			for (pos[2]=1; pos[2]<numVectors; ++pos[2])
 			{
 				// x-polarization
-				f4_volt(0, pos[0], pos[1], pos[2]).v *=
-				    f4_vv(0, pos[0], pos[1], pos[2]).v;
-				f4_volt(0, pos[0], pos[1], pos[2]).v +=
-				    f4_vi(0, pos[0], pos[1], pos[2]).v * (
-				        f4_curr(2, pos[0], pos[1]         , pos[2]).v -
-				        f4_curr(2, pos[0], pos[1]-shift[1], pos[2]).v -
-				        f4_curr(1, pos[0], pos[1]         , pos[2]).v +
-				        f4_curr(1, pos[0], pos[1]         , pos[2]-1).v
+				f4_volt[0][pos[0]][pos[1]][pos[2]].v *=
+				    f4_vv[0][pos[0]][pos[1]][pos[2]].v;
+				f4_volt[0][pos[0]][pos[1]][pos[2]].v +=
+				    f4_vi[0][pos[0]][pos[1]][pos[2]].v * (
+				        f4_curr[2][pos[0]][pos[1]         ][pos[2]].v -
+				        f4_curr[2][pos[0]][pos[1]-shift[1]][pos[2]].v -
+				        f4_curr[1][pos[0]][pos[1]         ][pos[2]].v +
+				        f4_curr[1][pos[0]][pos[1]         ][pos[2]-1].v
 				    );
 
 				// y-polarization
-				f4_volt(1, pos[0], pos[1], pos[2]).v *=
-				    f4_vv(1, pos[0], pos[1], pos[2]).v;
-				f4_volt(1, pos[0], pos[1], pos[2]).v +=
-				    f4_vi(1, pos[0], pos[1], pos[2]).v * (
-				        f4_curr(0, pos[0]         , pos[1], pos[2]  ).v -
-				        f4_curr(0, pos[0]         , pos[1], pos[2]-1).v -
-				        f4_curr(2, pos[0]         , pos[1], pos[2]  ).v +
-				        f4_curr(2, pos[0]-shift[0], pos[1], pos[2]  ).v
+				f4_volt[1][pos[0]][pos[1]][pos[2]].v *=
+				    f4_vv[1][pos[0]][pos[1]][pos[2]].v;
+				f4_volt[1][pos[0]][pos[1]][pos[2]].v +=
+				    f4_vi[1][pos[0]][pos[1]][pos[2]].v * (
+				        f4_curr[0][pos[0]         ][pos[1]][pos[2]  ].v -
+				        f4_curr[0][pos[0]         ][pos[1]][pos[2]-1].v -
+				        f4_curr[2][pos[0]         ][pos[1]][pos[2]  ].v +
+				        f4_curr[2][pos[0]-shift[0]][pos[1]][pos[2]  ].v
 				    );
 
 				// z-polarization
-				f4_volt(2, pos[0], pos[1], pos[2]).v *=
-				    f4_vv(2, pos[0], pos[1], pos[2]).v;
-				f4_volt(2, pos[0], pos[1], pos[2]).v +=
-				    f4_vi(2, pos[0], pos[1], pos[2]).v * (
-				        f4_curr(1, pos[0]         , pos[1]         , pos[2]).v -
-				        f4_curr(1, pos[0]-shift[0], pos[1]         , pos[2]).v -
-				        f4_curr(0, pos[0]         , pos[1]         , pos[2]).v +
-				        f4_curr(0, pos[0]         , pos[1]-shift[1], pos[2]).v
+				f4_volt[2][pos[0]][pos[1]][pos[2]].v *=
+				    f4_vv[2][pos[0]][pos[1]][pos[2]].v;
+				f4_volt[2][pos[0]][pos[1]][pos[2]].v +=
+				    f4_vi[2][pos[0]][pos[1]][pos[2]].v * (
+				        f4_curr[1][pos[0]         ][pos[1]         ][pos[2]].v -
+				        f4_curr[1][pos[0]-shift[0]][pos[1]         ][pos[2]].v -
+				        f4_curr[0][pos[0]         ][pos[1]         ][pos[2]].v +
+				        f4_curr[0][pos[0]         ][pos[1]-shift[1]][pos[2]].v
 				    );
 			}
 
 			// for pos[2] = 0
 			// x-polarization
 			temp.f[0] = 0;
-			temp.f[1] = f4_curr(1, pos[0], pos[1], numVectors-1).f[0];
-			temp.f[2] = f4_curr(1, pos[0], pos[1], numVectors-1).f[1];
-			temp.f[3] = f4_curr(1, pos[0], pos[1], numVectors-1).f[2];
-			f4_volt(0, pos[0], pos[1], 0).v *=
-			    f4_vv(0, pos[0], pos[1], 0).v;
-			f4_volt(0, pos[0], pos[1], 0).v +=
-			    f4_vi(0, pos[0], pos[1], 0).v * (
-			        f4_curr(2, pos[0], pos[1]         , 0).v -
-			        f4_curr(2, pos[0], pos[1]-shift[1], 0).v -
-			        f4_curr(1, pos[0], pos[1]         , 0).v +
+			temp.f[1] = f4_curr[1][pos[0]][pos[1]][numVectors-1].f[0];
+			temp.f[2] = f4_curr[1][pos[0]][pos[1]][numVectors-1].f[1];
+			temp.f[3] = f4_curr[1][pos[0]][pos[1]][numVectors-1].f[2];
+			f4_volt[0][pos[0]][pos[1]][0].v *=
+			    f4_vv[0][pos[0]][pos[1]][0].v;
+			f4_volt[0][pos[0]][pos[1]][0].v +=
+			    f4_vi[0][pos[0]][pos[1]][0].v * (
+			        f4_curr[2][pos[0]][pos[1]         ][0].v -
+			        f4_curr[2][pos[0]][pos[1]-shift[1]][0].v -
+			        f4_curr[1][pos[0]][pos[1]         ][0].v +
 			        temp.v
 			    );
 
 			// y-polarization
 			temp.f[0] = 0;
-			temp.f[1] = f4_curr(0, pos[0], pos[1], numVectors-1).f[0];
-			temp.f[2] = f4_curr(0, pos[0], pos[1], numVectors-1).f[1];
-			temp.f[3] = f4_curr(0, pos[0], pos[1], numVectors-1).f[2];
-			f4_volt(1, pos[0], pos[1], 0).v *=
-			    f4_vv(1, pos[0], pos[1], 0).v;
-			f4_volt(1, pos[0], pos[1], 0).v +=
-			    f4_vi(1, pos[0], pos[1], 0).v * (
-			        f4_curr(0, pos[0]         , pos[1], 0).v -
+			temp.f[1] = f4_curr[0][pos[0]][pos[1]][numVectors-1].f[0];
+			temp.f[2] = f4_curr[0][pos[0]][pos[1]][numVectors-1].f[1];
+			temp.f[3] = f4_curr[0][pos[0]][pos[1]][numVectors-1].f[2];
+			f4_volt[1][pos[0]][pos[1]][0].v *=
+			    f4_vv[1][pos[0]][pos[1]][0].v;
+			f4_volt[1][pos[0]][pos[1]][0].v +=
+			    f4_vi[1][pos[0]][pos[1]][0].v * (
+			        f4_curr[0][pos[0]         ][pos[1]][0].v -
 			        temp.v -
-			        f4_curr(2, pos[0]         , pos[1], 0).v +
-			        f4_curr(2, pos[0]-shift[0], pos[1], 0).v
+			        f4_curr[2][pos[0]         ][pos[1]][0].v +
+			        f4_curr[2][pos[0]-shift[0]][pos[1]][0].v
 			    );
 
 			// z-polarization
-			f4_volt(2, pos[0], pos[1], 0).v *=
-			    f4_vv(2, pos[0], pos[1], 0).v;
-			f4_volt(2, pos[0], pos[1], 0).v +=
-			    f4_vi(2, pos[0], pos[1], 0).v * (
-			        f4_curr(1, pos[0]         , pos[1]         , 0).v -
-			        f4_curr(1, pos[0]-shift[0], pos[1]         , 0).v -
-			        f4_curr(0, pos[0]         , pos[1]         , 0).v +
-			        f4_curr(0, pos[0]         , pos[1]-shift[1], 0).v
+			f4_volt[2][pos[0]][pos[1]][0].v *=
+			    f4_vv[2][pos[0]][pos[1]][0].v;
+			f4_volt[2][pos[0]][pos[1]][0].v +=
+			    f4_vi[2][pos[0]][pos[1]][0].v * (
+			        f4_curr[1][pos[0]         ][pos[1]         ][0].v -
+			        f4_curr[1][pos[0]-shift[0]][pos[1]         ][0].v -
+			        f4_curr[0][pos[0]         ][pos[1]         ][0].v +
+			        f4_curr[0][pos[0]         ][pos[1]-shift[1]][0].v
 			    );
 		}
 		++pos[0];
@@ -178,10 +175,10 @@ void Engine_sse::UpdateVoltages(unsigned int startX, unsigned int numX)
 
 void Engine_sse::UpdateCurrents(unsigned int startX, unsigned int numX)
 {
-	ArrayLib::ArrayENG<f4vector>& f4_curr = *f4_curr_ptr;
-	ArrayLib::ArrayENG<f4vector>& f4_volt = *f4_volt_ptr;
-	ArrayLib::ArrayENG<f4vector>& f4_ii = *Op->f4_ii_ptr;
-	ArrayLib::ArrayENG<f4vector>& f4_iv = *Op->f4_iv_ptr;
+	ArrayLib::ArrayNIJK<f4vector>& f4_curr = *f4_curr_ptr;
+	ArrayLib::ArrayNIJK<f4vector>& f4_volt = *f4_volt_ptr;
+	ArrayLib::ArrayNIJK<f4vector>& f4_ii = *Op->f4_ii_ptr;
+	ArrayLib::ArrayNIJK<f4vector>& f4_iv = *Op->f4_iv_ptr;
 
 	unsigned int pos[5];
 	f4vector temp;
@@ -194,79 +191,79 @@ void Engine_sse::UpdateCurrents(unsigned int startX, unsigned int numX)
 			for (pos[2]=0; pos[2]<numVectors-1; ++pos[2])
 			{
 				// x-pol
-				f4_curr(0, pos[0], pos[1], pos[2]).v *=
-				    f4_ii(0, pos[0], pos[1], pos[2]).v;
-				f4_curr(0, pos[0], pos[1], pos[2]).v +=
-				    f4_iv(0, pos[0], pos[1], pos[2]).v * (
-				        f4_volt(2, pos[0], pos[1]  , pos[2]  ).v -
-				        f4_volt(2, pos[0], pos[1]+1, pos[2]  ).v -
-				        f4_volt(1, pos[0], pos[1]  , pos[2]  ).v +
-				        f4_volt(1, pos[0], pos[1]  , pos[2]+1).v
+				f4_curr[0][pos[0]][pos[1]][pos[2]].v *=
+				    f4_ii[0][pos[0]][pos[1]][pos[2]].v;
+				f4_curr[0][pos[0]][pos[1]][pos[2]].v +=
+				    f4_iv[0][pos[0]][pos[1]][pos[2]].v * (
+				        f4_volt[2][pos[0]][pos[1]  ][pos[2]  ].v -
+				        f4_volt[2][pos[0]][pos[1]+1][pos[2]  ].v -
+				        f4_volt[1][pos[0]][pos[1]  ][pos[2]  ].v +
+				        f4_volt[1][pos[0]][pos[1]  ][pos[2]+1].v
 				    );
 
 				// y-pol
-				f4_curr(1, pos[0], pos[1], pos[2]).v *=
-				    f4_ii(1, pos[0], pos[1], pos[2]).v;
-				f4_curr(1, pos[0], pos[1], pos[2]).v +=
-				    f4_iv(1, pos[0], pos[1], pos[2]).v * (
-				        f4_volt(0, pos[0]  , pos[1], pos[2]  ).v -
-				        f4_volt(0, pos[0]  , pos[1], pos[2]+1).v -
-				        f4_volt(2, pos[0]  , pos[1], pos[2]  ).v +
-				        f4_volt(2, pos[0]+1, pos[1], pos[2]  ).v
+				f4_curr[1][pos[0]][pos[1]][pos[2]].v *=
+				    f4_ii[1][pos[0]][pos[1]][pos[2]].v;
+				f4_curr[1][pos[0]][pos[1]][pos[2]].v +=
+				    f4_iv[1][pos[0]][pos[1]][pos[2]].v * (
+				        f4_volt[0][pos[0]  ][pos[1]][pos[2]  ].v -
+				        f4_volt[0][pos[0]  ][pos[1]][pos[2]+1].v -
+				        f4_volt[2][pos[0]  ][pos[1]][pos[2]  ].v +
+				        f4_volt[2][pos[0]+1][pos[1]][pos[2]  ].v
 				    );
 
 				// z-pol
-				f4_curr(2, pos[0], pos[1], pos[2]).v *=
-				    f4_ii(2, pos[0], pos[1], pos[2]).v;
-				f4_curr(2, pos[0], pos[1], pos[2]).v +=
-				    f4_iv(2, pos[0], pos[1], pos[2]).v * (
-				        f4_volt(1, pos[0]  , pos[1]  , pos[2]).v -
-				        f4_volt(1, pos[0]+1, pos[1]  , pos[2]).v -
-				        f4_volt(0, pos[0]  , pos[1]  , pos[2]).v +
-				        f4_volt(0, pos[0]  , pos[1]+1, pos[2]).v
+				f4_curr[2][pos[0]][pos[1]][pos[2]].v *=
+				    f4_ii[2][pos[0]][pos[1]][pos[2]].v;
+				f4_curr[2][pos[0]][pos[1]][pos[2]].v +=
+				    f4_iv[2][pos[0]][pos[1]][pos[2]].v * (
+				        f4_volt[1][pos[0]  ][pos[1]  ][pos[2]].v -
+				        f4_volt[1][pos[0]+1][pos[1]  ][pos[2]].v -
+				        f4_volt[0][pos[0]  ][pos[1]  ][pos[2]].v +
+				        f4_volt[0][pos[0]  ][pos[1]+1][pos[2]].v
 				    );
 			}
 
 			// for pos[2] = numVectors-1
 			// x-pol
-			temp.f[0] = f4_volt(1, pos[0], pos[1], 0).f[1];
-			temp.f[1] = f4_volt(1, pos[0], pos[1], 0).f[2];
-			temp.f[2] = f4_volt(1, pos[0], pos[1], 0).f[3];
+			temp.f[0] = f4_volt[1][pos[0]][pos[1]][0].f[1];
+			temp.f[1] = f4_volt[1][pos[0]][pos[1]][0].f[2];
+			temp.f[2] = f4_volt[1][pos[0]][pos[1]][0].f[3];
 			temp.f[3] = 0;
-			f4_curr(0, pos[0], pos[1], numVectors-1).v *=
-			    f4_ii(0, pos[0], pos[1], numVectors-1).v;
-			f4_curr(0, pos[0], pos[1], numVectors-1).v +=
-			    f4_iv(0, pos[0], pos[1], numVectors-1).v * (
-			        f4_volt(2, pos[0], pos[1]  , numVectors-1).v -
-			        f4_volt(2, pos[0], pos[1]+1, numVectors-1).v -
-			        f4_volt(1, pos[0], pos[1]  , numVectors-1).v +
+			f4_curr[0][pos[0]][pos[1]][numVectors-1].v *=
+			    f4_ii[0][pos[0]][pos[1]][numVectors-1].v;
+			f4_curr[0][pos[0]][pos[1]][numVectors-1].v +=
+			    f4_iv[0][pos[0]][pos[1]][numVectors-1].v * (
+			        f4_volt[2][pos[0]][pos[1]  ][numVectors-1].v -
+			        f4_volt[2][pos[0]][pos[1]+1][numVectors-1].v -
+			        f4_volt[1][pos[0]][pos[1]  ][numVectors-1].v +
 			        temp.v
 			    );
 
 			// y-pol
-			temp.f[0] = f4_volt(0, pos[0], pos[1], 0).f[1];
-			temp.f[1] = f4_volt(0, pos[0], pos[1], 0).f[2];
-			temp.f[2] = f4_volt(0, pos[0], pos[1], 0).f[3];
+			temp.f[0] = f4_volt[0][pos[0]][pos[1]][0].f[1];
+			temp.f[1] = f4_volt[0][pos[0]][pos[1]][0].f[2];
+			temp.f[2] = f4_volt[0][pos[0]][pos[1]][0].f[3];
 			temp.f[3] = 0;
-			f4_curr(1, pos[0], pos[1], numVectors-1).v *=
-			    f4_ii(1, pos[0], pos[1], numVectors-1).v;
-			f4_curr(1, pos[0], pos[1], numVectors-1).v +=
-			    f4_iv(1, pos[0], pos[1], numVectors-1).v * (
-			        f4_volt(0, pos[0]  , pos[1], numVectors-1).v -
+			f4_curr[1][pos[0]][pos[1]][numVectors-1].v *=
+			    f4_ii[1][pos[0]][pos[1]][numVectors-1].v;
+			f4_curr[1][pos[0]][pos[1]][numVectors-1].v +=
+			    f4_iv[1][pos[0]][pos[1]][numVectors-1].v * (
+			        f4_volt[0][pos[0]  ][pos[1]][numVectors-1].v -
 			        temp.v -
-			        f4_volt(2, pos[0]  , pos[1], numVectors-1).v +
-			        f4_volt(2, pos[0]+1, pos[1], numVectors-1).v
+			        f4_volt[2][pos[0]  ][pos[1]][numVectors-1].v +
+			        f4_volt[2][pos[0]+1][pos[1]][numVectors-1].v
 			    );
 
 			// z-pol
-			f4_curr(2, pos[0], pos[1], numVectors-1).v *=
-			    f4_ii(2, pos[0], pos[1], numVectors-1).v;
-			f4_curr(2, pos[0], pos[1], numVectors-1).v +=
-			    f4_iv(2, pos[0], pos[1], numVectors-1).v * (
-			        f4_volt(1, pos[0]  , pos[1]  , numVectors-1).v -
-			        f4_volt(1, pos[0]+1, pos[1]  , numVectors-1).v -
-			        f4_volt(0, pos[0]  , pos[1]  , numVectors-1).v +
-			        f4_volt(0, pos[0]  , pos[1]+1, numVectors-1).v
+			f4_curr[2][pos[0]][pos[1]][numVectors-1].v *=
+			    f4_ii[2][pos[0]][pos[1]][numVectors-1].v;
+			f4_curr[2][pos[0]][pos[1]][numVectors-1].v +=
+			    f4_iv[2][pos[0]][pos[1]][numVectors-1].v * (
+			        f4_volt[1][pos[0]  ][pos[1]  ][numVectors-1].v -
+			        f4_volt[1][pos[0]+1][pos[1]  ][numVectors-1].v -
+			        f4_volt[0][pos[0]  ][pos[1]  ][numVectors-1].v +
+			        f4_volt[0][pos[0]  ][pos[1]+1][numVectors-1].v
 			    );
 		}
 		++pos[0];

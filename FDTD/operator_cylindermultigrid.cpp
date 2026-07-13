@@ -20,16 +20,8 @@
 #include "extensions/operator_ext_cylinder.h"
 #include "tools/useful.h"
 #include "CSUseful.h"
-#include <stdexcept>
 
-using std::cout;
-using std::cerr;
-using std::endl;
-
-Operator_CylinderMultiGrid::Operator_CylinderMultiGrid(
-	std::vector<double> Split_Radii,
-	unsigned int level
-) : Operator_Cylinder()
+Operator_CylinderMultiGrid::Operator_CylinderMultiGrid(vector<double> Split_Radii, unsigned int level) : Operator_Cylinder()
 {
 	m_Split_Radii = Split_Radii;
 	m_Split_Rad = m_Split_Radii.back();
@@ -42,11 +34,7 @@ Operator_CylinderMultiGrid::~Operator_CylinderMultiGrid()
 	Delete();
 }
 
-Operator_CylinderMultiGrid* Operator_CylinderMultiGrid::New(
-	std::vector<double> Split_Radii,
-	unsigned int numThreads,
-	unsigned int level
-)
+Operator_CylinderMultiGrid* Operator_CylinderMultiGrid::New(vector<double> Split_Radii, unsigned int numThreads, unsigned int level)
 {
 	if ((Split_Radii.size()==0) || (Split_Radii.size()>CYLIDINDERMULTIGRID_LIMIT))
 	{
@@ -69,7 +57,9 @@ Engine* Operator_CylinderMultiGrid::CreateEngine()
 
 double Operator_CylinderMultiGrid::GetNumberCells() const
 {
-	return (numLines[0]-m_Split_Pos)*(numLines[1])*(numLines[2]) + m_InnerOp->GetNumberCells();
+	if (numLines)
+		return (numLines[0]-m_Split_Pos)*(numLines[1])*(numLines[2]) + m_InnerOp->GetNumberCells();
+	return 0;
 }
 
 bool Operator_CylinderMultiGrid::SetupCSXGrid(CSRectGrid* grid)
@@ -81,7 +71,10 @@ bool Operator_CylinderMultiGrid::SetupCSXGrid(CSRectGrid* grid)
 	m_TimeStepVar = 3;
 
 	if ((numLines[1]-CC_closedAlpha)%2 != 1)
-		throw std::runtime_error("Operator_CylinderMultiGrid::SetupCSXGrid: Error, number of lines in alpha direction must be odd... found: " + std::to_string(numLines[1]));
+	{
+		cerr << "Operator_CylinderMultiGrid::SetupCSXGrid: Error, number of line in alpha direction must be odd... found: " << numLines[1] << endl;
+		exit(0);
+	}
 
 	m_Split_Pos = 0;
 	for (unsigned int n=0; n<numLines[0]; ++n)
@@ -175,7 +168,7 @@ void Operator_CylinderMultiGrid::SetNeighborUp(int ny, int id)
 {
 	if (ny==0)
 	{
-		cerr << "Operator_CylinderMultiGrid::SetNeighborUp: Error: MPI segregation in radial direction not supported for a cylindrical multigrid. Exit!";
+		cerr << "Operator_CylinderMultiGrid::SetNeighborUp: Error: MPI segregation in radial direction not supported for a cylindircal multigrid. Exit!";
 		MPI_Barrier(MPI_COMM_WORLD);
 		exit(-1);
 	}
@@ -187,7 +180,7 @@ void Operator_CylinderMultiGrid::SetNeighborDown(int ny, int id)
 {
 	if (ny==0)
 	{
-		cerr << "Operator_CylinderMultiGrid::SetNeighborDown: Error: MPI segregation in radial direction not supported for a cylindrical multigrid. Exit!";
+		cerr << "Operator_CylinderMultiGrid::SetNeighborDown: Error: MPI segregation in radial direction not supported for a cylindircal multigrid. Exit!";
 		MPI_Barrier(MPI_COMM_WORLD);
 		exit(-1);
 	}
@@ -196,15 +189,9 @@ void Operator_CylinderMultiGrid::SetNeighborDown(int ny, int id)
 }
 #endif
 
-void Operator_CylinderMultiGrid::CalcStartStopLines(
-	unsigned int &numThreads,
-	std::vector<unsigned int> &start,
-	std::vector<unsigned int> &stop
-) const
+void Operator_CylinderMultiGrid::CalcStartStopLines(unsigned int &numThreads, vector<unsigned int> &start, vector<unsigned int> &stop) const
 {
-	std::vector<unsigned int> jpt = AssignJobs2Threads(
-		numLines[0]- m_Split_Pos + 1, numThreads, true
-	);
+	vector<unsigned int> jpt = AssignJobs2Threads(numLines[0]- m_Split_Pos + 1, numThreads, true);
 
 	numThreads = jpt.size();
 
@@ -232,10 +219,7 @@ void Operator_CylinderMultiGrid::FillMissingDataStorage()
 		{
 			for (pos[1]=0; pos[1]<numLines[1]; ++pos[1])
 			{
-				std::vector<CSPrimitives*> vPrims = this->GetPrimitivesBoundBox(
-					pos[0], pos[1], -1, CSProperties::MATERIAL
-				);
-
+				vector<CSPrimitives*> vPrims = this->GetPrimitivesBoundBox(pos[0], pos[1], -1, CSProperties::MATERIAL);
 				for (pos[2]=0; pos[2]<numLines[2]; ++pos[2])
 				{
 					Calc_EffMatPos(ny,pos,EffMat,vPrims);
@@ -243,22 +227,22 @@ void Operator_CylinderMultiGrid::FillMissingDataStorage()
 					if (m_epsR_ptr)
 					{
 						ArrayLib::ArrayNIJK<float>& m_epsR = *m_epsR_ptr;
-						m_epsR(ny, pos[0], pos[1], pos[2]) =  EffMat[0];
+						m_epsR[ny][pos[0]][pos[1]][pos[2]] =  EffMat[0];
 					}
 					if (m_kappa_ptr)
 					{
 						ArrayLib::ArrayNIJK<float>& m_kappa = *m_kappa_ptr;
-						m_kappa(ny, pos[0], pos[1], pos[2]) =  EffMat[1];
+						m_kappa[ny][pos[0]][pos[1]][pos[2]] =  EffMat[1];
 					}
 					if (m_mueR_ptr)
 					{
 						ArrayLib::ArrayNIJK<float>& m_mueR = *m_mueR_ptr;
-						m_mueR(ny, pos[0], pos[1], pos[2]) =  EffMat[2];
+						m_mueR[ny][pos[0]][pos[1]][pos[2]] =  EffMat[2];
 					}
 					if (m_sigma_ptr)
 					{
 						ArrayLib::ArrayNIJK<float>& m_sigma = *m_sigma_ptr;
-						m_sigma(ny, pos[0], pos[1], pos[2]) =  EffMat[3];
+						m_sigma[ny][pos[0]][pos[1]][pos[2]] =  EffMat[3];
 					}
 				}
 			}
@@ -309,7 +293,7 @@ int Operator_CylinderMultiGrid::CalcECOperator( DebugFlags debugFlags )
 	return retCode;
 }
 
-void Operator_CylinderMultiGrid::DumpPEC2File( std::string filename, unsigned int *range)
+void Operator_CylinderMultiGrid::DumpPEC2File( string filename, unsigned int *range)
 {
 	if (range!=NULL)
 		return Operator_Cylinder::DumpPEC2File(filename, range);

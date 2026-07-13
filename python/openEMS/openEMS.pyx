@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# cython: language_level=3
 #
 # Copyright (C) 2015,20016 Thorsten Liebig (Thorsten.Liebig@gmx.de)
 #
@@ -17,9 +16,8 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-import os, sys, glob
+import os, sys, shutil
 import numpy as np
-import h5py
 cimport openEMS
 from openEMS import ports, nf2ff, automesh
 from pathlib import Path
@@ -116,9 +114,6 @@ cdef class openEMS:
             self.__CSX.thisptr = NULL
 
     def Reset(self):
-        if self.__CSX is not None:
-            self.__CSX.thisptr = NULL
-            self.__CSX = None
         self.thisptr.Reset()
 
     def SetNumberOfTimeSteps(self, val):
@@ -278,7 +273,7 @@ cdef class openEMS:
         :param f0: -- Base frequency.
         :param fmax: -- Maximum frequency.
         """
-        self.thisptr.SetCustomExcite(_str.encode('UTF-8'), f0, fmax)
+        self.thisptr.SetCustomExcite(_str, f0, fmax)
 
     def SetBoundaryCond(self, BC):
         """ SetBoundaryCond(BC)
@@ -330,21 +325,8 @@ cdef class openEMS:
                     grid.AddLine(n, stop[n])
         return port
 
-    def AddCurvePort(self, port_nr, R, start, stop, excite=0, **kw):
-        """ AddCurvePort(port_nr, R, start, stop, excite=0, **kw)
-
-        Add a curve (wire) port.
-
-        See Also
-        --------
-        openEMS.ports.CurvePort
-        """
-        if self.__CSX is None:
-            raise Exception('AddCurvePort: CSX is not set!')
-        return ports.CurvePort(self.__CSX, port_nr, R, start, stop, excite, **kw)
-
-    def AddWaveGuidePort(self, port_nr, start, stop, p_dir, E_func = None, H_func = None, kc = 0.0, excite = 0, excite_type = 0, E_file = None, H_file = None, **kw):
-        """ AddWaveGuidePort(self, port_nr, start, stop, p_dir, E_func = None, H_func = None, kc = 0.0, excite = 0, excite_type = 0, E_file = None, H_file = None, **kw)
+    def AddWaveGuidePort(self, port_nr, start, stop, p_dir, E_func, H_func, kc, excite=0, **kw):
+        """ AddWaveGuidePort(self, port_nr, start, stop, p_dir, E_func, H_func, kc, excite=0, **kw)
 
         Add a arbitrary waveguide port.
 
@@ -354,7 +336,7 @@ cdef class openEMS:
         """
         if self.__CSX is None:
             raise Exception('AddWaveGuidePort: CSX is not set!')
-        return ports.WaveguidePort(self.__CSX, port_nr, start, stop, p_dir, E_func, H_func, kc, excite, excite_type, E_file, H_file, **kw)
+        return ports.WaveguidePort(self.__CSX, port_nr, start, stop, p_dir, E_func, H_func, kc, excite, **kw)
 
     def AddRectWaveGuidePort(self, port_nr, start, stop, p_dir, a, b, mode_name, excite=0, **kw):
         """ AddRectWaveGuidePort(port_nr, start, stop, p_dir, a, b, mode_name, excite=0, **kw)
@@ -369,32 +351,6 @@ cdef class openEMS:
             raise Exception('AddRectWaveGuidePort: CSX is not set!')
         return ports.RectWGPort(self.__CSX, port_nr, start, stop, p_dir, a, b, mode_name, excite, **kw)
 
-    def AddCircWaveGuidePort(self, port_nr, start, stop, exc_dir, radius, mode_name, pol_ang=0, excite=0, **kw):
-        """ AddCircWaveGuidePort(port_nr, start, stop, exc_dir, radius, mode_name, pol_ang=0, excite=0, **kw)
-
-        Add a circular waveguide port.
-
-        See Also
-        --------
-        openEMS.ports.CircWGPort
-        """
-        if self.__CSX is None:
-            raise Exception('AddCircWaveGuidePort: CSX is not set!')
-        return ports.CircWGPort(self.__CSX, port_nr, start, stop, exc_dir, radius, mode_name, pol_ang, excite, **kw)
-
-    def AddCoaxialPort(self, port_nr, pec_prop, mat_prop, start, stop, prop_dir, r_i, r_o, r_os, excite_amp=0, **kw):
-        """ AddCoaxialPort(port_nr, pec_prop, mat_prop, start, stop, prop_dir, r_i, r_o, r_os, excite_amp=0, **kw)
-
-        Add a coaxial port.
-
-        See Also
-        --------
-        openEMS.ports.CoaxialPort
-        """
-        if self.__CSX is None:
-            raise Exception('AddCoaxialPort: CSX is not set!')
-        return ports.CoaxialPort(self.__CSX, port_nr, pec_prop, mat_prop, start, stop, prop_dir, r_i, r_o, r_os, excite_amp, **kw)
-
     def AddMSLPort(self, port_nr, metal_prop, start, stop, prop_dir, exc_dir, excite=0, **kw):
         """ AddMSLPort(port_nr, metal_prop, start, stop, prop_dir, exc_dir, excite=0, **kw)
 
@@ -407,32 +363,6 @@ cdef class openEMS:
         if self.__CSX is None:
             raise Exception('AddMSLPort: CSX is not set!')
         return ports.MSLPort(self.__CSX, port_nr, metal_prop, start, stop, prop_dir, exc_dir, excite, **kw)
-
-    def AddStripLinePort(self, port_nr, metal_prop, start, stop, prop_dir, exc_dir, height, excite=0, **kw):
-        """ AddStripLinePort(port_nr, metal_prop, start, stop, prop_dir, exc_dir, height, excite=0, **kw)
-
-        Add a stripline port.
-
-        See Also
-        --------
-        openEMS.ports.StripLinePort
-        """
-        if self.__CSX is None:
-            raise Exception('AddStripLinePort: CSX is not set!')
-        return ports.StripLinePort(self.__CSX, port_nr, metal_prop, start, stop, prop_dir, exc_dir, height, excite, **kw)
-
-    def AddCPWPort(self, port_nr, metal_prop, start, stop, prop_dir, exc_dir, gap_width, excite=0, **kw):
-        """ AddCPWPort(port_nr, metal_prop, start, stop, prop_dir, exc_dir, gap_width, excite=0, **kw)
-
-        Add a coplanar waveguide port.
-
-        See Also
-        --------
-        openEMS.ports.CPWPort
-        """
-        if self.__CSX is None:
-            raise Exception('AddCPWPort: CSX is not set!')
-        return ports.CPWPort(self.__CSX, port_nr, metal_prop, start, stop, prop_dir, exc_dir, gap_width, excite, **kw)
 
     def CreateNF2FFBox(self, name='nf2ff', start=None, stop=None, **kw):
         """ CreateNF2FFBox(name='nf2ff', start=None, stop=None, **kw)
@@ -497,19 +427,6 @@ cdef class openEMS:
         self.thisptr.SetCSX(CSX.thisptr)
 
     def GetCSX(self):
-        cdef _ContinuousStructure* ptr = self.thisptr.GetCSX()
-        cdef ContinuousStructure csx  # declare here
-
-        if ptr == NULL:
-            self.__CSX = None
-            return None
-
-        if self.__CSX is None or self.__CSX.thisptr != ptr:
-            if self.__CSX is not None:
-                self.__CSX.thisptr = NULL  # prevent dangling pointer on the old wrapper
-            csx = ContinuousStructure.__new__(ContinuousStructure)
-            csx.thisptr = ptr
-            self.__CSX = csx
         return self.__CSX
 
     def AddEdges2Grid(self, dirs, primitives=None, properties=None, **kw):
@@ -576,46 +493,13 @@ cdef class openEMS:
         cdef vector[string] allOptionsBuffer = allOptions
         self.thisptr.SetLibraryArguments(allOptionsBuffer)
 
-    def _cleanup_sim_path(self, sim_path, verbose=False):
-        # Whitelist of plain glob patterns — always deleted when matched.
-        # Extend this list as new output file types are added to openEMS.
-        _ALWAYS_DELETE = [
-            'et', 'ht',                      # excitation time-series (ASCII)
-            'port_ut*', 'port_it*',          # port voltage/current (ASCII)
-            'nf2ff*.h5',                     # NF2FF HDF5 results
-            '*.vtp', '*.vtk', '*.vtr', '*.pvd',  # VTK visualisation files
-            'openEMS_run_stats.txt',
-            'openEMS_stats.txt',
-            'debugCSX.xml',
-        ]
-        for pattern in _ALWAYS_DELETE:
-            for f in glob.glob(os.path.join(sim_path, pattern)):
-                if os.path.isfile(f):
-                    if verbose:
-                        print('cleanup: removing {}'.format(f))
-                    os.remove(f)
-        # *.h5 files are deleted when they carry the openEMS field-dump
-        # fingerprint attribute or contain the /nf2ff group (covers nf2ff
-        # output files regardless of their filename).
-        for f in glob.glob(os.path.join(sim_path, '*.h5')):
-            if not os.path.isfile(f):
-                continue
-            try:
-                with h5py.File(f, 'r') as h:
-                    if 'openEMS_HDF5_version' in h.attrs or '/nf2ff' in h:
-                        if verbose:
-                            print('cleanup: removing {}'.format(f))
-                        os.remove(f)
-            except Exception:
-                pass
-
     def Run(self, sim_path, cleanup=False, setup_only=False, **kw):
         """ Run(sim_path, cleanup=False, setup_only=False, verbose=None)
 
         Run the openEMS FDTD simulation.
 
         :param sim_path: str -- path to run in and create result data
-        :param cleanup: bool -- delete known openEMS output files from sim_path before running (only whitelisted file patterns are removed)
+        :param cleanup: bool -- remove existing sim_path to cleanup old results
         :param setup_only: bool -- only perform FDTD setup, do not run simulation
 
         One can also pass almost all command-line options supported by the main
@@ -640,7 +524,8 @@ cdef class openEMS:
           components
         """
         if cleanup and os.path.exists(sim_path):
-            self._cleanup_sim_path(sim_path, verbose=kw.get('verbose'))
+            shutil.rmtree(sim_path, ignore_errors=True)
+            os.mkdir(sim_path)
         if not os.path.exists(sim_path):
             os.mkdir(sim_path)
         os.chdir(sim_path)
@@ -663,26 +548,3 @@ cdef class openEMS:
 
     def SetAbort(self, val):
         self.thisptr.SetAbort(val)
-
-    def Write2XML(self, file):
-        """ Write2XML(file)
-
-        Write the openEMS FDTD setup and CSX data into an *.xml file.
-        Can be run by the standalone openEMS binary.
-
-        :param file: xml file name
-        """
-        return self.thisptr.Write2XML(file.encode('UTF-8'))
-
-    def ReadFromXML(self, file):
-        """ ReadFromXML(file)
-
-        Read the openEMS FDTD setup and CSX data from an *.xml file.
-        Warning: Will call reset before reading the file!
-
-        :param file: xml file name
-        """
-        if self.__CSX is not None:
-            self.__CSX.thisptr = NULL
-            self.__CSX = None
-        return self.thisptr.ReadFromXML(file.encode('UTF-8'))

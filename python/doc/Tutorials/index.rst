@@ -10,4 +10,3 @@ Tutorials
     Intro_Tutorials
     MicroWave_Tutorials
     Antenna_Tutorials
-    Exposure_Tutorials

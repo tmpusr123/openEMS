@@ -8,4 +8,3 @@ Micro Wave Tutorials
 
     MSL_NotchFilter
     CRLH_Extraction
-    StripLine2MSL

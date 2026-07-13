@@ -27,7 +27,7 @@
 #include <boost/fusion/include/list_fwd.hpp>
 
 #include "tools/useful.h"
-#if defined(_WIN32) && !defined(__GNUC__)
+#ifndef __GNUC__
 #include <Winsock2.h> // for struct timeval
 #else
 #include <sys/time.h>
@@ -95,18 +95,12 @@ public:
 	//! Iterate \a iterTS number of timesteps
 	virtual bool IterateTS(unsigned int iterTS);
 
-	virtual void DoPreVoltageUpdates()  {throw std::runtime_error("Engine_Multithread::DoPreVoltageUpdates without thread ID is invalid");}
 	virtual void DoPreVoltageUpdates(int threadID);
-	virtual void DoPostVoltageUpdates() {throw std::runtime_error("Engine_Multithread::DoPostVoltageUpdates without thread ID is invalid");}
 	virtual void DoPostVoltageUpdates(int threadID);
-	virtual void Apply2Voltages()       {throw std::runtime_error("Engine_Multithread::Apply2Voltages without thread ID is invalid");}
 	virtual void Apply2Voltages(int threadID);
 
-	virtual void DoPreCurrentUpdates()  {throw std::runtime_error("Engine_Multithread::DoPreCurrentUpdates without thread ID is invalid");}
 	virtual void DoPreCurrentUpdates(int threadID);
-	virtual void DoPostCurrentUpdates() {throw std::runtime_error("Engine_Multithread::DoPostCurrentUpdates without thread ID is invalid");}
 	virtual void DoPostCurrentUpdates(int threadID);
-	virtual void Apply2Current()        {throw std::runtime_error("Engine_Multithread::Apply2Current without thread ID is invalid");}
 	virtual void Apply2Current(int threadID);
 
 protected:

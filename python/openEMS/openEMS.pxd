@@ -29,7 +29,6 @@ cdef extern from "openEMS/openems.h":
 
         void SetNumberOfTimeSteps(unsigned int val)
         void SetCSX(_ContinuousStructure* csx)
-        _ContinuousStructure* GetCSX()
 
         void SetEndCriteria(double val)
         void SetOverSampling(int val)
@@ -61,9 +60,6 @@ cdef extern from "openEMS/openems.h":
 
         int SetupFDTD() nogil
         void RunFDTD()  nogil
-
-        bool Write2XML(string file)
-        bool ReadFromXML(string file)
 
         @staticmethod
         void WelcomeScreen()

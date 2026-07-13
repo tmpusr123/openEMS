@@ -47,40 +47,6 @@ def Check_Array_Equal(a,b, tol, relative=False):
         d = np.abs((a-b))
     return np.max(d)<tol
 
-def check_mode_purity(label, signal, purity, threshold=0.99, sig_frac=0.01):
-    """Assert mode purity > threshold where the signal exceeds sig_frac * peak.
-
-    Parameters
-    ----------
-    label : str
-        Descriptive name used in the assertion message.
-    signal : array
-        Time-domain signal amplitude (column 1 of probe file).
-    purity : array or None
-        Mode purity time series (column 2 of probe file), or None if unavailable.
-    threshold : float
-        Minimum acceptable mode purity (default 0.99 = 99 %).
-    sig_frac : float
-        Ignore time steps where |signal| < sig_frac * max(|signal|).
-
-    Notes
-    -----
-    Purity can be negative when the wave travels in the opposite direction
-    (e.g. the receive port seeing the transmitted wave), so abs(purity) is used.
-    """
-    if purity is None:
-        return
-    mask = np.abs(signal) >= sig_frac * np.max(np.abs(signal))
-    if not np.any(mask):
-        return
-    min_purity = np.min(np.abs(purity[mask]))
-    print('{}: min mode purity = {:.1f}% ({:.1f}% of samples considered)'.format(
-        label, 100*min_purity, 100*np.sum(mask)/len(signal)))
-    assert min_purity >= threshold, \
-        '{}: mode purity {:.1f}% below {:.0f}% threshold'.format(
-            label, 100*min_purity, 100*threshold)
-
-
 if __name__=="__main__":
     import pylab as plt
 

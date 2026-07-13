@@ -18,12 +18,10 @@
 #include "operator_sse_compressed.h"
 #include "engine_sse_compressed.h"
 #include "engine_sse.h"
+#include "tools/array_ops.h"
 
 #include <map>
 #include <cstring>
-
-using std::cout;
-using std::endl;
 
 Operator_SSE_Compressed* Operator_SSE_Compressed::New()
 {
@@ -35,7 +33,7 @@ Operator_SSE_Compressed* Operator_SSE_Compressed::New()
 
 Operator_SSE_Compressed::Operator_SSE_Compressed() : Operator_sse()
 {
-	m_Use_Compression = false;
+	m_Use_Compression = false;	
 }
 
 Operator_SSE_Compressed::~Operator_SSE_Compressed()
@@ -121,7 +119,7 @@ bool Operator_SSE_Compressed::CompressOperator()
 	ArrayLib::ArrayNIJK<f4vector>& f4_iv = *f4_iv_ptr;
 	ArrayLib::ArrayNIJK<f4vector>& f4_ii = *f4_ii_ptr;
 
-	std::map<SSE_coeff,unsigned int> lookUpMap;
+	map<SSE_coeff,unsigned int> lookUpMap;
 
 	unsigned int pos[3];
 	for (pos[0]=0; pos[0]<numLines[0]; ++pos[0])
@@ -130,13 +128,13 @@ bool Operator_SSE_Compressed::CompressOperator()
 		{
 			for (pos[2]=0; pos[2]<numVectors; ++pos[2])
 			{
-				f4vector vv[3] = { f4_vv(0, pos[0], pos[1], pos[2]), f4_vv(1, pos[0], pos[1], pos[2]), f4_vv(2, pos[0], pos[1], pos[2]) };
-				f4vector vi[3] = { f4_vi(0, pos[0], pos[1], pos[2]), f4_vi(1, pos[0], pos[1], pos[2]), f4_vi(2, pos[0], pos[1], pos[2]) };
-				f4vector iv[3] = { f4_iv(0, pos[0], pos[1], pos[2]), f4_iv(1, pos[0], pos[1], pos[2]), f4_iv(2, pos[0], pos[1], pos[2]) };
-				f4vector ii[3] = { f4_ii(0, pos[0], pos[1], pos[2]), f4_ii(1, pos[0], pos[1], pos[2]), f4_ii(2, pos[0], pos[1], pos[2]) };
+				f4vector vv[3] = { f4_vv[0][pos[0]][pos[1]][pos[2]], f4_vv[1][pos[0]][pos[1]][pos[2]], f4_vv[2][pos[0]][pos[1]][pos[2]] };
+				f4vector vi[3] = { f4_vi[0][pos[0]][pos[1]][pos[2]], f4_vi[1][pos[0]][pos[1]][pos[2]], f4_vi[2][pos[0]][pos[1]][pos[2]] };
+				f4vector iv[3] = { f4_iv[0][pos[0]][pos[1]][pos[2]], f4_iv[1][pos[0]][pos[1]][pos[2]], f4_iv[2][pos[0]][pos[1]][pos[2]] };
+				f4vector ii[3] = { f4_ii[0][pos[0]][pos[1]][pos[2]], f4_ii[1][pos[0]][pos[1]][pos[2]], f4_ii[2][pos[0]][pos[1]][pos[2]] };
 				SSE_coeff c( vv, vi, iv, ii );
 
-				std::map<SSE_coeff,unsigned int>::iterator it;
+				map<SSE_coeff,unsigned int>::iterator it;
 				it = lookUpMap.find(c);
 				if (it == lookUpMap.end())
 				{
@@ -150,13 +148,13 @@ bool Operator_SSE_Compressed::CompressOperator()
 						f4_ii_Compressed[n].push_back( ii[n] );
 					}
 					lookUpMap[c] = index;
-					m_Op_index(pos[0], pos[1], pos[2]) = index;
+					m_Op_index[pos[0]][pos[1]][pos[2]] = index;
 				}
 				else
 				{
 					// this operator is already in the list
 					unsigned int index = (*it).second;
-					m_Op_index(pos[0], pos[1], pos[2]) = index;
+					m_Op_index[pos[0]][pos[1]][pos[2]] = index;
 				}
 			}
 		}
@@ -224,7 +222,7 @@ bool SSE_coeff::operator<( const SSE_coeff& other ) const
 	return false;
 }
 
-void SSE_coeff::print( std::ostream& stream ) const
+void SSE_coeff::print( ostream& stream ) const
 {
 	stream << "SSE_coeff: (" << endl;
 	for (int n=0; n<3; n++)

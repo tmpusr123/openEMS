@@ -16,14 +16,16 @@
 */
 
 #include "engine_interface_sse_fdtd.h"
-#include <stdexcept>
 
 Engine_Interface_SSE_FDTD::Engine_Interface_SSE_FDTD(Operator_sse* op) : Engine_Interface_FDTD(op)
 {
 	m_Op_SSE = op;
 	m_Eng_SSE = dynamic_cast<Engine_sse*>(m_Op_SSE->GetEngine());
 	if (m_Eng_SSE==NULL)
-		throw std::runtime_error("Engine_Interface_SSE_FDTD::Engine_Interface_SSE_FDTD: Error: SSE-Engine is not set!");
+	{
+		cerr << "Engine_Interface_SSE_FDTD::Engine_Interface_SSE_FDTD: Error: SSE-Engine is not set! Exit!" << endl;
+		exit(1);
+	}
 }
 
 Engine_Interface_SSE_FDTD::~Engine_Interface_SSE_FDTD()
@@ -55,16 +57,16 @@ double Engine_Interface_SSE_FDTD::CalcFastEnergy() const
 				ArrayLib::ArrayNIJK<f4vector>& f4_volt = *m_Eng_SSE->Engine_sse::f4_volt_ptr;
 				ArrayLib::ArrayNIJK<f4vector>& f4_curr = *m_Eng_SSE->Engine_sse::f4_curr_ptr;
 
-				E_energy.v += f4_volt(0, pos[0], pos[1], pos[2]).v * f4_volt(0, pos[0], pos[1], pos[2]).v;
-				E_energy.v += f4_volt(1, pos[0], pos[1], pos[2]).v * f4_volt(1, pos[0], pos[1], pos[2]).v;
-				E_energy.v += f4_volt(2, pos[0], pos[1], pos[2]).v * f4_volt(2, pos[0], pos[1], pos[2]).v;
+				E_energy.v += f4_volt[0][pos[0]][pos[1]][pos[2]].v * f4_volt[0][pos[0]][pos[1]][pos[2]].v;
+				E_energy.v += f4_volt[1][pos[0]][pos[1]][pos[2]].v * f4_volt[1][pos[0]][pos[1]][pos[2]].v;
+				E_energy.v += f4_volt[2][pos[0]][pos[1]][pos[2]].v * f4_volt[2][pos[0]][pos[1]][pos[2]].v;
 
-				H_energy.v += f4_curr(0, pos[0], pos[1], pos[2]).v * f4_curr(0, pos[0], pos[1], pos[2]).v;
-				H_energy.v += f4_curr(1, pos[0], pos[1], pos[2]).v * f4_curr(1, pos[0], pos[1], pos[2]).v;
-				H_energy.v += f4_curr(2, pos[0], pos[1], pos[2]).v * f4_curr(2, pos[0], pos[1], pos[2]).v;
+				H_energy.v += f4_curr[0][pos[0]][pos[1]][pos[2]].v * f4_curr[0][pos[0]][pos[1]][pos[2]].v;
+				H_energy.v += f4_curr[1][pos[0]][pos[1]][pos[2]].v * f4_curr[1][pos[0]][pos[1]][pos[2]].v;
+				H_energy.v += f4_curr[2][pos[0]][pos[1]][pos[2]].v * f4_curr[2][pos[0]][pos[1]][pos[2]].v;
 			}
 		}
 	}
 
-	return EPS0*(E_energy.f[0]+E_energy.f[1]+E_energy.f[2]+E_energy.f[3]) + MUE0*(H_energy.f[0]+H_energy.f[1]+H_energy.f[2]+H_energy.f[3]);
+	return __EPS0__*(E_energy.f[0]+E_energy.f[1]+E_energy.f[2]+E_energy.f[3]) + __MUE0__*(H_energy.f[0]+H_energy.f[1]+H_energy.f[2]+H_energy.f[3]);
 }

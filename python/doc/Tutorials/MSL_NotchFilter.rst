@@ -1,5 +1,3 @@
-.. _tutorial_msl_notchfilter:
-
 Microstrip Notch Filter
 =======================
 
