@@ -21,13 +21,13 @@
 #include "ContinuousStructure.h"
 #include "tools/global.h"
 #include "Common/processing.h"
-#include <string>
+#include "string"
 
-struct Grid_Path
+typedef struct
 {
 	std::vector<unsigned int> posPath[3];
 	std::vector<unsigned short> dir;
-};
+} Grid_Path;
 
 //! Abstract base-class for a common operator
 class Operator_Base

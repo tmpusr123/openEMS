@@ -18,12 +18,15 @@
 #ifndef NF2FF_H
 #define NF2FF_H
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <vector>
 #include <cmath>
 #include <complex>
-#include <string>
 
-#if defined(_WIN32)
+using namespace std;
+
+#if defined(WIN32)
 	#ifdef BUILD_NF2FF_LIB
 	#define NF2FF_EXPORT __declspec(dllexport)
 	#else
@@ -40,39 +43,43 @@ class nf2ff_calc;
 class NF2FF_EXPORT nf2ff
 {
 public:
-	nf2ff(std::vector<float> freq, std::vector<float> theta, std::vector<float> phi, std::vector<float> center, unsigned int numThreads=0);
+	nf2ff(vector<float> freq, vector<float> theta, vector<float> phi, vector<float> center, unsigned int numThreads=0);
 	~nf2ff();
 
-	bool AnalyseFile(std::string E_Field_file, std::string H_Field_file);
+	bool AnalyseFile(string E_Field_file, string H_Field_file);
 
 	void SetRadius(float radius);
-	void SetPermittivity(std::vector<float> permittivity);
-	void SetPermeability(std::vector<float> permeability);
-
+	void SetPermittivity(vector<float> permittivity);
+	void SetPermeability(vector<float> permeability);
+	
 	void SetMirror(int type, int dir, float pos);
 
 	double GetTotalRadPower(size_t f_idx) const;
 	double GetMaxDirectivity(size_t f_idx) const;
 
+	complex<double>** GetETheta(size_t f_idx) const;
+	complex<double>** GetEPhi(size_t f_idx) const;
+	double** GetRadPower(size_t f_idx) const;
+
 	//! Write results to a hdf5 file
-	bool Write2HDF5(std::string filename);
+	bool Write2HDF5(string filename);
 
 	void SetVerboseLevel(int level) {m_Verbose=level;}
 
 	static bool AnalyseXMLNode(TiXmlElement* ti_nf2ff);
-	static bool AnalyseXMLFile(std::string filename);
+	static bool AnalyseXMLFile(string filename);
 
 protected:
-	std::vector<float> m_freq;
-	std::vector<float> m_permittivity;
-	std::vector<float> m_permeability;
+	vector<float> m_freq;
+	vector<float> m_permittivity;
+	vector<float> m_permeability;
 	unsigned int m_numTheta;
 	unsigned int m_numPhi;
 	float* m_theta;
 	float* m_phi;
 	float m_radius;
 	int m_Verbose;
-	std::vector<nf2ff_calc*> m_nf2ff;
+	vector<nf2ff_calc*> m_nf2ff;
 };
 
 #endif // NF2FF_H

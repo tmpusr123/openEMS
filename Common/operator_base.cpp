@@ -106,7 +106,7 @@ void Operator_Base::SetBackgroundEpsR(double val)
 {
 	if (val<1)
 	{
-		cerr << __func__ << ": Warning, a relative electric permittivity <1 is not supported, skipping" << endl;
+		cerr << __func__ << ": Warning, a relative electric permittivity <1 it not supported, skipping" << endl;
 		return;
 	}
 	m_BG_epsR=val;
@@ -116,7 +116,7 @@ void Operator_Base::SetBackgroundMueR(double val)
 {
 	if (val<1)
 	{
-		cerr << __func__ << ": Warning, a relative magnetic permeability <1 is not supported, skipping" << endl;
+		cerr << __func__ << ": Warning, a relative magnetic permeability <1 it not supported, skipping" << endl;
 		return;
 	}
 	m_BG_mueR=val;
@@ -126,7 +126,7 @@ void Operator_Base::SetBackgroundKappa(double val)
 {
 	if (val<0)
 	{
-		cerr << __func__ << ": Warning, an electric conductivity <0 is not supported, skipping" << endl;
+		cerr << __func__ << ": Warning, an electric conductivity <0 it not supported, skipping" << endl;
 		return;
 	}
 	m_BG_kappa=val;
@@ -136,7 +136,7 @@ void Operator_Base::SetBackgroundSigma(double val)
 {
 	if (val<0)
 	{
-		cerr << __func__ << ": Warning, an artificial magnetic conductivity <0 is not supported, skipping" << endl;
+		cerr << __func__ << ": Warning, an artifival magnetic conductivity <0 it not supported, skipping" << endl;
 		return;
 	}
 	m_BG_sigma=val;
@@ -147,7 +147,7 @@ void Operator_Base::SetBackgroundDensity(double val)
 {
 	if (val<0)
 	{
-		cerr << __func__ << ": Warning, a mass density <0 is not supported, skipping" << endl;
+		cerr << __func__ << ": Warning, a mass density <0 it not supported, skipping" << endl;
 		return;
 	}
 	m_BG_density=val;

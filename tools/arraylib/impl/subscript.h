@@ -41,7 +41,7 @@ template <typename ArrayType, size_t maxDim, size_t dim>
 class ArrayLib::Subscript
 {
 public:
-	Subscript(ArrayType& array) : m_array(array), m_sub{} {}
+	Subscript(ArrayType& array) : m_array(array) {}
 
 	Subscript(
 		const ArrayType& array,

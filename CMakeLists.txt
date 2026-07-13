@@ -7,17 +7,14 @@ ELSE()
   SET( CMAKE_BUILD_TYPE Release CACHE STRING "Set to either \"Release\" or \"Debug\"" )
 ENDIF()
 
-# In CMake 4, 3.10 is deprecated and 3.5 has been removed.
-# use 3.1...3.10 so all of these versions are acceptable as min. version.
-# https://cmake.org/cmake/help/latest/command/cmake_minimum_required.html
 cmake_minimum_required(VERSION 3.1...3.10)
 
 PROJECT(openEMS CXX C)
 
 # default
 set(LIB_VERSION_MAJOR 0)
-set(LIB_VERSION_MINOR 37)
-set(LIB_VERSION_PATCH 0)
+set(LIB_VERSION_MINOR 0)
+set(LIB_VERSION_PATCH 36)
 set(LIB_VERSION_STRING ${LIB_VERSION_MAJOR}.${LIB_VERSION_MINOR}.${LIB_VERSION_PATCH})
 
 set(VERSION "v${LIB_VERSION_STRING}")
@@ -28,17 +25,26 @@ ENDIF()
 
 #ADD_DEFINITIONS( -D__SSE2__ )
 
+
+set (CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS} -g" )
+set (CMAKE_SHARED_LINKER_FLAGS_DEBUG "${CMAKE_SHARED_LINKER_FLAGS} -g" )
+
+set(VERSION "v0.0.36")
+
 # add git revision
 IF(EXISTS ${PROJECT_SOURCE_DIR}/.git )
   FIND_PACKAGE(Git)
   # Get the latest abbreviated commit hash of the working branch
   execute_process(
-    COMMAND ${GIT_EXECUTABLE} describe --tags --always
+    COMMAND ${GIT_EXECUTABLE} describe --tags
     WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
     OUTPUT_VARIABLE GITREV
   )
   set(VERSION ${GITREV})
-  string(STRIP ${VERSION} VERSION)
+  string(STRIP "${VERSION}" VERSION)
+  if(NOT VERSION)
+    set(VERSION "v0.37.0-rc1-cuda")
+  endif()
   message(STATUS "Found Git repository, ${PROJECT_NAME} version tag: ${VERSION}")
 ENDIF()
 
@@ -73,39 +79,72 @@ if (WITH_MPI)
 	message(STATUS "Found MPI. INCLUDE " ${MPI_INCLUDE_PATH})
 endif()
 
+if (WITH_CUDA)
+  # nvcc 11.5 cannot parse gcc-11's libstdc++ <functional>; use g++-10 as the
+  # CUDA host compiler: overridable via -DOPENEMS_CUDA_HOST_COMPILER=...; falls
+  # back to g++-10 when present (needed for nvcc 11.5 on Ubuntu 22.04, which
+  # cannot parse gcc-11's <functional>), else the system default is used
+  # (fine for CUDA 12.x toolchains).
+  if(DEFINED OPENEMS_CUDA_HOST_COMPILER)
+    set(CMAKE_CUDA_HOST_COMPILER ${OPENEMS_CUDA_HOST_COMPILER})
+  elseif(EXISTS /usr/bin/g++-10)
+    set(CMAKE_CUDA_HOST_COMPILER /usr/bin/g++-10)
+  endif()
+  # Route every <<<>>> launch onto the per-thread default stream so the whole
+  # per-timestep kernel sequence can be captured into a CUDA graph and replayed.
+  # LOAD-BEARING FOR CORRECTNESS: every extension/core kernel uses a bare
+  # <<<blocks,threads>>> launch (no explicit stream), so they all land on this
+  # one stream and execute strictly serially in host-call order. The no-atomics
+  # arguments in the Mur / Lorentz(multi-order) / LumpedRLC ports rely on that
+  # serialization (their read-modify-writes to shared edge/overlap cells are only
+  # safe because per-order/per-face kernels never run concurrently). Do NOT drop
+  # this flag or move any kernel onto a second stream without adding atomics.
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --default-stream per-thread")
+  enable_language(CUDA)
+  ADD_DEFINITIONS(-DWITH_CUDA)
+  find_library(CUDART_LIBRARY cudart ${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES})
+  INCLUDE_DIRECTORIES(${CMAKE_CUDA_IMPLICIT_LINK_DIRECTORIES})
+  INCLUDE_DIRECTORIES(${CMAKE_CURRENT_SOURCE_DIR}/hemi)
+
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(myapp PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
+  endif()
+
+endif()
+
 # Set locations of extra CMake modules
 SET(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${openEMS_SOURCE_DIR}/cmake/Modules/")
 
 # fparser
 # $ cmake -D FPARSER_ROOT_DIR=~/opt/openEMS .
 # SET(FPARSER_ROOT_DIR ~/opt/openEMS)
-find_library(fparser_LIBRARIES 
+find_library(fparser_LIBRARIES
   NAMES fparser
   HINTS ${FPARSER_ROOT_DIR}/lib${LIB_SUFFIX}
   NO_CMAKE_FIND_ROOT_PATH
 )
 message(STATUS "fparser: ${fparser_LIBRARIES}" )
 #TODO test if fparser was found
-INCLUDE_DIRECTORIES( ${FPARSER_ROOT_DIR}/include ) 
+INCLUDE_DIRECTORIES( ${FPARSER_ROOT_DIR}/include )
 
 # CSXCAD
 # $ cmake -D CSXCAD_ROOT_DIR=~/opt/openEMS .
 # SET(CSXCAD_ROOT_DIR ~/opt/openEMS)
-find_library(CSXCAD_LIBRARIES 
+find_library(CSXCAD_LIBRARIES
   NAMES CSXCAD
   HINTS ${CSXCAD_ROOT_DIR}/lib${LIB_SUFFIX}
   NO_CMAKE_FIND_ROOT_PATH
 )
 message(STATUS "CSXCAD_LIBRARIES: ${CSXCAD_LIBRARIES}" )
 #TODO test if CSXCADs was found
-find_path(CSXCAD_INCLUDE_DIR 
-    NAMES ContinuousStructure.h 
+find_path(CSXCAD_INCLUDE_DIR
+    NAMES ContinuousStructure.h
     HINTS ${CSXCAD_ROOT_DIR}/include
     PATH_SUFFIXES "CSXCAD" ${CSXCAD_INCLUDE_DIR}
     NO_CMAKE_FIND_ROOT_PATH
 )
 message(STATUS "CSXCAD_INCLUDE_DIR: ${CSXCAD_INCLUDE_DIR}" )
-INCLUDE_DIRECTORIES( ${CSXCAD_INCLUDE_DIR} ) 
+INCLUDE_DIRECTORIES( ${CSXCAD_INCLUDE_DIR} )
 
 # TinyXML module from https://github.com/ros/cmake_modules
 find_package(TinyXML REQUIRED)
@@ -131,18 +170,13 @@ find_package(Boost 1.46 COMPONENTS
   program_options
   REQUIRED
 )
-if (${Boost_MINOR_VERSION} LESS 69)
-    # Since Boost 1.69, "system" is header only, so a check
-    # is needed only in Boost 1.68 and earlier.
-    find_package(Boost 1.46 COMPONENTS system thread date_time serialization chrono program_options REQUIRED)
-endif()
 message(STATUS "Boost_INCLUDE_DIRS: ${Boost_INCLUDE_DIRS}")
 message(STATUS "Boost_LIBRARIES: ${Boost_LIBRARIES}")
 INCLUDE_DIRECTORIES (${Boost_INCLUDE_DIRS})
 
 # vtk
 find_package(VTK COMPONENTS vtkCommonCore NO_MODULE QUIET)
-if ("${VTK_VERSION}" VERSION_GREATER "9")
+if (${VTK_VERSION} VERSION_GREATER "9")
     find_package(VTK REQUIRED COMPONENTS IOXML IOGeometry IOLegacy IOPLY NO_MODULE REQUIRED)
 else()
     find_package(VTK REQUIRED COMPONENTS vtkIOXML vtkIOGeometry vtkIOLegacy vtkIOPLY NO_MODULE REQUIRED)
@@ -183,6 +217,12 @@ endif()
 add_library( openEMS SHARED ${SOURCES})
 #ADD_EXECUTABLE( openEMS main.cpp ${SOURCES})
 set_target_properties(openEMS PROPERTIES VERSION ${LIB_VERSION_STRING} SOVERSION ${LIB_VERSION_MAJOR} )
+
+if (WITH_CUDA)
+  set_target_properties(openEMS PROPERTIES CUDA_ARCHITECTURES "86")
+  INCLUDE_DIRECTORIES(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+endif()
+
 TARGET_LINK_LIBRARIES( openEMS
   ${CSXCAD_LIBRARIES}
   ${fparser_LIBRARIES}
@@ -203,17 +243,21 @@ endif (WIN32)
 ADD_EXECUTABLE( openEMS_bin main.cpp )
 SET_TARGET_PROPERTIES(openEMS_bin PROPERTIES OUTPUT_NAME openEMS)
 TARGET_LINK_LIBRARIES(openEMS_bin openEMS)
- 
+
+if (WITH_CUDA)
+  SET_TARGET_PROPERTIES(openEMS_bin PROPERTIES CUDA_ARCHITECTURES "86")
+endif()
+
 if (WIN32)
-    INSTALL(TARGETS openEMS RUNTIME DESTINATION bin ARCHIVE DESTINATION lib${LIB_SUFFIX})
+    INSTALL(TARGETS openEMS DESTINATION bin)
 else()
     INSTALL(TARGETS openEMS DESTINATION lib${LIB_SUFFIX})
 endif()
 INSTALL(TARGETS openEMS_bin DESTINATION bin)
 
 if (UNIX)
-    INSTALL( FILES openEMS.sh 
-         DESTINATION bin 
+    INSTALL( FILES openEMS.sh
+         DESTINATION bin
          PERMISSIONS OWNER_WRITE OWNER_READ GROUP_READ WORLD_READ OWNER_EXECUTE GROUP_EXECUTE WORLD_EXECUTE)
 	if (WITH_MPI)
 	INSTALL( FILES openEMS_MPI.sh

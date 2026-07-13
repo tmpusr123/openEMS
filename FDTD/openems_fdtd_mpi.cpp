@@ -22,6 +22,8 @@
 #include "FDTD/engine_mpi.h"
 #include "Common/processfields.h"
 #include "Common/processintegral.h"
+#include <stdio.h>
+#include <stdlib.h>
 #include <iostream>
 #include <sstream>
 #include <vector>
@@ -515,7 +517,7 @@ void openEMS_FDTD_MPI::RunFDTD()
 			}
 
 			MPI_Bcast(&step, 1, MPI_INT, 0, MPI_COMM_WORLD);
-
+			
 			prevTime=currTime;
 			prevTS=currTS;
 

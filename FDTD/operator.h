@@ -35,15 +35,16 @@ class Operator : public Operator_Base
 {
 	friend class Engine;
 	friend class Engine_Interface_FDTD;
-	friend class Operator_Ext_LorentzMaterial;
-	friend class Operator_Ext_ConductingSheet;
+	friend class Operator_Ext_LorentzMaterial; 	// We need to find a way around this... friend class Operator_Extension only would be nice
+	friend class Operator_Ext_ConductingSheet; 	// We need to find a way around this... friend class Operator_Extension only would be nice
 	friend class Operator_Ext_PML_SF_Plane;
 	friend class Operator_Ext_Excitation;
 	friend class Operator_Ext_UPML;
 	friend class Operator_Ext_Cylinder;
-	friend class Operator_Ext_LumpedRLC;
-	friend class Operator_Ext_Absorbing_BC;
+	friend class Operator_Ext_LumpedRLC;		// Gadi: I now know why the two previous remarks are here.
 
+	// So apparaently I have to use functionality from operator
+	// in my "lumpedRLC" class. This is ugly...
 public:
 	enum DebugFlags {None=0,debugMaterial=1,debugOperator=2,debugPEC=4};
 
@@ -64,24 +65,24 @@ public:
 	inline virtual FDTD_FLOAT GetVV(unsigned int n, unsigned int x, unsigned int y, unsigned int z) const
 	{
 		ArrayLib::ArrayNIJK<FDTD_FLOAT>& vv = *vv_ptr;
-		return vv(n, x, y, z);
+		return vv[n][x][y][z];
 	}
 
 	inline virtual FDTD_FLOAT GetVI(unsigned int n, unsigned int x, unsigned int y, unsigned int z) const
 	{
 		ArrayLib::ArrayNIJK<FDTD_FLOAT>& vi = *vi_ptr;
-		return vi(n, x, y, z);
+		return vi[n][x][y][z];
 	}
 
 	inline virtual FDTD_FLOAT GetII(unsigned int n, unsigned int x, unsigned int y, unsigned int z) const
 	{
 		ArrayLib::ArrayNIJK<FDTD_FLOAT>& ii = *ii_ptr;
-		return ii(n, x, y, z);
+		return ii[n][x][y][z];
 	}
 	inline virtual FDTD_FLOAT GetIV(unsigned int n, unsigned int x, unsigned int y, unsigned int z) const
 	{
 		ArrayLib::ArrayNIJK<FDTD_FLOAT>& iv = *iv_ptr;
-		return iv(n, x, y, z);
+		return iv[n][x][y][z];
 	}
 
 	// convenient access functions
@@ -107,22 +108,22 @@ public:
 	inline virtual void SetVV(unsigned int n, unsigned int x, unsigned int y, unsigned int z, FDTD_FLOAT value)
 	{
 		ArrayLib::ArrayNIJK<FDTD_FLOAT>& vv = *vv_ptr;
-		vv(n, x, y, z) = value;
+		vv[n][x][y][z] = value;
 	}
 	inline virtual void SetVI(unsigned int n, unsigned int x, unsigned int y, unsigned int z, FDTD_FLOAT value)
 	{
 		ArrayLib::ArrayNIJK<FDTD_FLOAT>& vi = *vi_ptr;
-		vi(n, x, y, z) = value;
+		vi[n][x][y][z] = value;
 	}
 	inline virtual void SetII(unsigned int n, unsigned int x, unsigned int y, unsigned int z, FDTD_FLOAT value)
 	{
 		ArrayLib::ArrayNIJK<FDTD_FLOAT>& ii = *ii_ptr;
-		ii(n, x, y, z) = value;
+		ii[n][x][y][z] = value;
 	}
 	inline virtual void SetIV(unsigned int n, unsigned int x, unsigned int y, unsigned int z, FDTD_FLOAT value)
 	{
 		ArrayLib::ArrayNIJK<FDTD_FLOAT>& iv = *iv_ptr;
-		iv(n, x, y, z) = value;
+		iv[n][x][y][z] = value;
 	}
 
 	virtual void ApplyElectricBC(bool* dirs); //applied by default to all boundaries
@@ -231,12 +232,7 @@ public:
 
 	virtual double CalcNumericPhaseVelocity(unsigned int start[3], unsigned int stop[3], double propDir[3], float freq) const;
 
-	virtual std::vector<CSPrimitives*> GetPrimitivesBoundBox(
-		int posX,
-		int posY,
-		int posZ,
-		CSProperties::PropertyType type=CSProperties::ANY
-	) const;
+	virtual vector<CSPrimitives*> GetPrimitivesBoundBox(int posX, int posY, int posZ, CSProperties::PropertyType type=CSProperties::ANY) const;
 
 protected:
 	//! use New() for creating a new Operator
@@ -253,9 +249,9 @@ protected:
 	virtual Grid_Path FindPath(double start[], double stop[]);
 
 	// debug
-	virtual void DumpOperator2File(std::string filename);
-	virtual void DumpMaterial2File(std::string filename);
-	virtual void DumpPEC2File( std::string filename, unsigned int *range = NULL );
+	virtual void DumpOperator2File(string filename);
+	virtual void DumpMaterial2File(string filename);
+	virtual void DumpPEC2File( string filename, unsigned int *range = NULL );
 
 	unsigned int m_Nr_PEC[3]; //count PEC edges
 	virtual bool CalcPEC();
@@ -268,17 +264,13 @@ protected:
 	virtual double CalcTimestep();
 	double opt_dT;
 	bool m_InvaildTimestep;
-	std::string m_Used_TS_Name;
+	string m_Used_TS_Name;
 
 	double CalcTimestep_Var1();
 	double CalcTimestep_Var3();
 
 	//! Calculate the FDTD equivalent circuit parameter for the given position and direction ny. \sa Calc_EffMat_Pos
-	virtual bool Calc_ECPos(
-		int ny,
-		const unsigned int* pos,
-		double* EC, std::vector<CSPrimitives *> vPrims
-	) const;
+	virtual bool Calc_ECPos(int ny, const unsigned int* pos, double* EC, vector<CSPrimitives *> vPrims) const;
 
 	//! Get the FDTD raw disc delta, needed by Calc_EffMatPos() \sa Calc_EffMatPos
 	/*!
@@ -289,37 +281,15 @@ protected:
 	virtual double GetRawDiscDelta(int ny, const int pos) const;
 
 	//! Get the material at a given coordinate, direction and type from CSX (internal use only)
-	virtual double GetMaterial(
-		int ny,
-		const double coords[3],
-		int MatType,
-		std::vector<CSPrimitives*> vPrims,
-		bool markAsUsed=true
-	) const;
+	virtual double GetMaterial(int ny, const double coords[3], int MatType, vector<CSPrimitives*> vPrims, bool markAsUsed=true) const;
 
 	MatAverageMethods m_MatAverageMethod;
 
 	//! Calculate the effective/averaged material properties at the given position and direction ny.
-	virtual bool Calc_EffMatPos(
-		int ny,
-		const unsigned int* pos,
-		double* EffMat,
-		std::vector<CSPrimitives*> vPrims
-	) const;
+	virtual bool Calc_EffMatPos(int ny, const unsigned int* pos, double* EffMat, vector<CSPrimitives*> vPrims) const;
 
-	virtual bool AverageMatCellCenter(
-		int ny,
-		const unsigned int* pos,
-		double* EffMat,
-		std::vector<CSPrimitives*> vPrims
-	) const;
-
-	virtual bool AverageMatQuarterCell(
-		int ny,
-		const unsigned int* pos,
-		double* EffMat,
-		std::vector<CSPrimitives*> vPrims
-	) const;
+	virtual bool AverageMatCellCenter(int ny, const unsigned int* pos, double* EffMat, vector<CSPrimitives*> vPrims) const;
+	virtual bool AverageMatQuarterCell(int ny, const unsigned int* pos, double* EffMat, vector<CSPrimitives*> vPrims) const;
 
 	//! Calc operator at certain \a pos
 	virtual void Calc_ECOperatorPos(int n, unsigned int* pos);
@@ -350,7 +320,7 @@ protected:
 
 	AdrOp* MainOp;
 
-	std::vector<Operator_Extension*> m_Op_exts;
+	vector<Operator_Extension*> m_Op_exts;
 
 	Engine* m_Engine;
 

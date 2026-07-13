@@ -16,13 +16,16 @@
 */
 
 #include "nf2ff_calc.h"
+#include "../tools/array_ops.h"
 #include "../tools/useful.h"
-#include "../tools/constants.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <vector>
 #include <cmath>
 #include <complex>
 #include <iostream>
+#include <sstream>
 
 using namespace std;
 
@@ -54,10 +57,10 @@ void nf2ff_calc_thread::operator()()
 	unsigned int num_t=m_stop-m_start+1;
 
 
-	ArrayLib::ArrayNIJK<std::complex<float>> &Js     = *m_data.Js;
-	ArrayLib::ArrayNIJK<std::complex<float>> &Ms     = *m_data.Ms;
-	ArrayLib::ArrayNIJK<std::complex<float>> &E_field= *m_data.E_field;
-	ArrayLib::ArrayNIJK<std::complex<float>> &H_field= *m_data.H_field;
+	complex<float>**** Js=m_data.Js;
+	complex<float>**** Ms=m_data.Ms;
+	complex<float>**** E_field=m_data.E_field;
+	complex<float>**** H_field=m_data.H_field;
 
 	int mesh_type = m_data.mesh_type;
 
@@ -69,35 +72,35 @@ void nf2ff_calc_thread::operator()()
 		for (pos[nPP]=0; pos[nPP]<numLines[nPP]; ++pos[nPP])
 		{
 			// Js =  n x H
-			Js(0, pos[0], pos[1], pos[2]) = normDir[1]*H_field(2, pos[0], pos[1], pos[2]) - normDir[2]*H_field(1, pos[0], pos[1], pos[2]);
-			Js(1, pos[0], pos[1], pos[2]) = normDir[2]*H_field(0, pos[0], pos[1], pos[2]) - normDir[0]*H_field(2, pos[0], pos[1], pos[2]);
-			Js(2, pos[0], pos[1], pos[2]) = normDir[0]*H_field(1, pos[0], pos[1], pos[2]) - normDir[1]*H_field(0, pos[0], pos[1], pos[2]);
+			Js[0][pos[0]][pos[1]][pos[2]] = normDir[1]*H_field[2][pos[0]][pos[1]][pos[2]] - normDir[2]*H_field[1][pos[0]][pos[1]][pos[2]];
+			Js[1][pos[0]][pos[1]][pos[2]] = normDir[2]*H_field[0][pos[0]][pos[1]][pos[2]] - normDir[0]*H_field[2][pos[0]][pos[1]][pos[2]];
+			Js[2][pos[0]][pos[1]][pos[2]] = normDir[0]*H_field[1][pos[0]][pos[1]][pos[2]] - normDir[1]*H_field[0][pos[0]][pos[1]][pos[2]];
 
 			// Ms = -n x E
-			Ms(0, pos[0], pos[1], pos[2]) = normDir[2]*E_field(1, pos[0], pos[1], pos[2]) - normDir[1]*E_field(2, pos[0], pos[1], pos[2]);
-			Ms(1, pos[0], pos[1], pos[2]) = normDir[0]*E_field(2, pos[0], pos[1], pos[2]) - normDir[2]*E_field(0, pos[0], pos[1], pos[2]);
-			Ms(2, pos[0], pos[1], pos[2]) = normDir[1]*E_field(0, pos[0], pos[1], pos[2]) - normDir[0]*E_field(1, pos[0], pos[1], pos[2]);
+			Ms[0][pos[0]][pos[1]][pos[2]] = normDir[2]*E_field[1][pos[0]][pos[1]][pos[2]] - normDir[1]*E_field[2][pos[0]][pos[1]][pos[2]];
+			Ms[1][pos[0]][pos[1]][pos[2]] = normDir[0]*E_field[2][pos[0]][pos[1]][pos[2]] - normDir[2]*E_field[0][pos[0]][pos[1]][pos[2]];
+			Ms[2][pos[0]][pos[1]][pos[2]] = normDir[1]*E_field[0][pos[0]][pos[1]][pos[2]] - normDir[0]*E_field[1][pos[0]][pos[1]][pos[2]];
 
 			//transform to cartesian coordinates
 			if (mesh_type==1)
 			{
-				Js(0, pos[0], pos[1], pos[2]) = (normDir[1]*H_field(2, pos[0], pos[1], pos[2]) - normDir[2]*H_field(1, pos[0], pos[1], pos[2]))*cos(lines[1][pos[1]]) \
-						- (normDir[2]*H_field(0, pos[0], pos[1], pos[2]) - normDir[0]*H_field(2, pos[0], pos[1], pos[2]))*sin(lines[1][pos[1]]);
-				Js(1, pos[0], pos[1], pos[2]) = (normDir[1]*H_field(2, pos[0], pos[1], pos[2]) - normDir[2]*H_field(1, pos[0], pos[1], pos[2]))*sin(lines[1][pos[1]]) \
-						+ (normDir[2]*H_field(0, pos[0], pos[1], pos[2]) - normDir[0]*H_field(2, pos[0], pos[1], pos[2]))*cos(lines[1][pos[1]]);
+				Js[0][pos[0]][pos[1]][pos[2]] = (normDir[1]*H_field[2][pos[0]][pos[1]][pos[2]] - normDir[2]*H_field[1][pos[0]][pos[1]][pos[2]])*cos(lines[1][pos[1]]) \
+						- (normDir[2]*H_field[0][pos[0]][pos[1]][pos[2]] - normDir[0]*H_field[2][pos[0]][pos[1]][pos[2]])*sin(lines[1][pos[1]]);
+				Js[1][pos[0]][pos[1]][pos[2]] = (normDir[1]*H_field[2][pos[0]][pos[1]][pos[2]] - normDir[2]*H_field[1][pos[0]][pos[1]][pos[2]])*sin(lines[1][pos[1]]) \
+						+ (normDir[2]*H_field[0][pos[0]][pos[1]][pos[2]] - normDir[0]*H_field[2][pos[0]][pos[1]][pos[2]])*cos(lines[1][pos[1]]);
 
-				Ms(0, pos[0], pos[1], pos[2]) = (normDir[2]*E_field(1, pos[0], pos[1], pos[2]) - normDir[1]*E_field(2, pos[0], pos[1], pos[2]))*cos(lines[1][pos[1]]) \
-						- (normDir[0]*E_field(2, pos[0], pos[1], pos[2]) - normDir[2]*E_field(0, pos[0], pos[1], pos[2]))*sin(lines[1][pos[1]]);
-				Ms(1, pos[0], pos[1], pos[2]) = (normDir[2]*E_field(1, pos[0], pos[1], pos[2]) - normDir[1]*E_field(2, pos[0], pos[1], pos[2]))*sin(lines[1][pos[1]]) \
-						+ (normDir[0]*E_field(2, pos[0], pos[1], pos[2]) - normDir[2]*E_field(0, pos[0], pos[1], pos[2]))*cos(lines[1][pos[1]]);
+				Ms[0][pos[0]][pos[1]][pos[2]] = (normDir[2]*E_field[1][pos[0]][pos[1]][pos[2]] - normDir[1]*E_field[2][pos[0]][pos[1]][pos[2]])*cos(lines[1][pos[1]]) \
+						- (normDir[0]*E_field[2][pos[0]][pos[1]][pos[2]] - normDir[2]*E_field[0][pos[0]][pos[1]][pos[2]])*sin(lines[1][pos[1]]);
+				Ms[1][pos[0]][pos[1]][pos[2]] = (normDir[2]*E_field[1][pos[0]][pos[1]][pos[2]] - normDir[1]*E_field[2][pos[0]][pos[1]][pos[2]])*sin(lines[1][pos[1]]) \
+						+ (normDir[0]*E_field[2][pos[0]][pos[1]][pos[2]] - normDir[2]*E_field[0][pos[0]][pos[1]][pos[2]])*cos(lines[1][pos[1]]);
 			}
 		}
 	}
 
-	ArrayLib::ArrayIJ<complex<double>>& m_Nt = *m_data.m_Nt;
-	ArrayLib::ArrayIJ<complex<double>>& m_Np = *m_data.m_Np;
-	ArrayLib::ArrayIJ<complex<double>>& m_Lt = *m_data.m_Lt;
-	ArrayLib::ArrayIJ<complex<double>>& m_Lp = *m_data.m_Lp;
+	complex<double>** m_Nt=m_data.m_Nt;
+	complex<double>** m_Np=m_data.m_Np;
+	complex<double>** m_Lt=m_data.m_Lt;
+	complex<double>** m_Lp=m_data.m_Lp;
 
 	float center[3] = {m_nf_calc->m_centerCoord[0],m_nf_calc->m_centerCoord[1],m_nf_calc->m_centerCoord[2]};
 	if (mesh_type==1)
@@ -112,7 +115,7 @@ void nf2ff_calc_thread::operator()()
 	float sinT,sinP;
 	float cosP,cosT;
 	float r_cos_psi;
-	float k = 2*PI*m_nf_calc->m_freq/C0*sqrt(m_nf_calc->m_permittivity*m_nf_calc->m_permeability);
+	float k = 2*M_PI*m_nf_calc->m_freq/__C0__*sqrt(m_nf_calc->m_permittivity*m_nf_calc->m_permeability);
 	complex<float> exp_jkr;
 	complex<float> _I_(0,1);
 	for (unsigned int tn=0;tn<m_nf_calc->m_numTheta;++tn)
@@ -138,13 +141,13 @@ void nf2ff_calc_thread::operator()()
 						r_cos_psi = ((lines[0][pos[0]]*cos(lines[1][pos[1]]))-center[0])*cosP_sinT + ((lines[0][pos[0]]*sin(lines[1][pos[1]]))-center[1])*sinT_sinP + (lines[2][pos[2]]-center[2])*cosT;
 					exp_jkr = exp(_I_*k*r_cos_psi);
 					area = edge_length_P[pos[nP]]*edge_length_PP[pos[nPP]];
-					m_Nt(tn, pn) += area*exp_jkr*(Js(0, pos[0], pos[1], pos[2])*cosT_cosP + Js(1, pos[0], pos[1], pos[2])*cosT_sinP \
-												  - Js(2, pos[0], pos[1], pos[2])*sinT);
-					m_Np(tn, pn) += area*exp_jkr*(Js(1, pos[0], pos[1], pos[2])*cosP - Js(0, pos[0], pos[1], pos[2])*sinP);
+					m_Nt[tn][pn] += area*exp_jkr*(Js[0][pos[0]][pos[1]][pos[2]]*cosT_cosP + Js[1][pos[0]][pos[1]][pos[2]]*cosT_sinP \
+												  - Js[2][pos[0]][pos[1]][pos[2]]*sinT);
+					m_Np[tn][pn] += area*exp_jkr*(Js[1][pos[0]][pos[1]][pos[2]]*cosP - Js[0][pos[0]][pos[1]][pos[2]]*sinP);
 
-					m_Lt(tn, pn) += area*exp_jkr*(Ms(0, pos[0], pos[1], pos[2])*cosT_cosP + Ms(1, pos[0], pos[1], pos[2])*cosT_sinP \
-												  - Ms(2, pos[0], pos[1], pos[2])*sinT);
-					m_Lp(tn, pn) += area*exp_jkr*(Ms(1, pos[0], pos[1], pos[2])*cosP - Ms(0, pos[0], pos[1], pos[2])*sinP);
+					m_Lt[tn][pn] += area*exp_jkr*(Ms[0][pos[0]][pos[1]][pos[2]]*cosT_cosP + Ms[1][pos[0]][pos[1]][pos[2]]*cosT_sinP \
+												  - Ms[2][pos[0]][pos[1]][pos[2]]*sinT);
+					m_Lp[tn][pn] += area*exp_jkr*(Ms[1][pos[0]][pos[1]][pos[2]]*cosP - Ms[0][pos[0]][pos[1]][pos[2]]*sinP);
 				}
 			}
 		}
@@ -175,11 +178,11 @@ nf2ff_calc::nf2ff_calc(float freq, vector<float> theta, vector<float> phi, vecto
 		m_phi[n]=phi.at(n);
 
 	unsigned int numLines[2] = {m_numTheta, m_numPhi};
-	m_E_theta = new ArrayLib::ArrayIJ<std::complex<double>>("E_theta", numLines); // Create2DArray<std::complex<double> >(numLines);
-	m_E_phi   = new ArrayLib::ArrayIJ<std::complex<double>>("E_phi"  , numLines); // Create2DArray<std::complex<double> >(numLines);
-	m_H_theta = new ArrayLib::ArrayIJ<std::complex<double>>("H_theta", numLines); // Create2DArray<std::complex<double> >(numLines);
-	m_H_phi   = new ArrayLib::ArrayIJ<std::complex<double>>("H_phi"  , numLines); // Create2DArray<std::complex<double> >(numLines);
-	m_P_rad   = new ArrayLib::ArrayIJ<double>("P_rad", numLines); // Create2DArray<double>(numLines);
+	m_E_theta = Create2DArray<std::complex<double> >(numLines);
+	m_E_phi = Create2DArray<std::complex<double> >(numLines);
+	m_H_theta = Create2DArray<std::complex<double> >(numLines);
+	m_H_phi = Create2DArray<std::complex<double> >(numLines);
+	m_P_rad = Create2DArray<double>(numLines);
 
 	if (center.size()==3)
 	{
@@ -216,15 +219,16 @@ nf2ff_calc::~nf2ff_calc()
 	delete[] m_theta;
 	m_theta = NULL;
 
-	delete m_E_theta;
+	unsigned int numLines[2] = {m_numTheta, m_numPhi};
+	Delete2DArray(m_E_theta,numLines);
 	m_E_theta = NULL;
-	delete m_E_phi;
+	Delete2DArray(m_E_phi,numLines);
 	m_E_phi = NULL;
-	delete m_H_theta;
+	Delete2DArray(m_H_theta,numLines);
 	m_H_theta = NULL;
-	delete m_H_phi;
+	Delete2DArray(m_H_phi,numLines);
 	m_H_phi = NULL;
-	delete m_P_rad;
+	Delete2DArray(m_P_rad,numLines);
 	m_P_rad = NULL;
 
 	delete m_Barrier;
@@ -257,18 +261,18 @@ void nf2ff_calc::SetMirror(int type, int dir, float pos)
 		cerr << "nf2ff_calc::SetMirror: Error, invalid type!" << endl;
 		return;
 	}
-	m_MirrorType[dir] = static_cast<MirrorType>(type);
+	m_MirrorType[dir] = type;
 	m_MirrorPos[dir] = pos;
 }
 
-bool nf2ff_calc::AddMirrorPlane(int n, float **lines, unsigned int* numLines, ArrayLib::ArrayNIJK<std::complex<float>> &E_field, ArrayLib::ArrayNIJK<std::complex<float>> &H_field, int MeshType)
+bool nf2ff_calc::AddMirrorPlane(int n, float **lines, unsigned int* numLines, complex<float>**** E_field, complex<float>**** H_field, int MeshType)
 {
 	float E_factor[3] = {1,1,1};
 	float H_factor[3] = {1,1,1};
 
 	int nP  = (n+1)%3;
 	int nPP = (n+2)%3;
-
+	
 	// mirror in ny direction
 	for (unsigned int i=0;i<numLines[n];++i)
 		lines[n][i] = 2.0*m_MirrorPos[n] - lines[n][i];
@@ -290,14 +294,14 @@ bool nf2ff_calc::AddMirrorPlane(int n, float **lines, unsigned int* numLines, Ar
 			for (unsigned int j=0;j<numLines[1];++j)
 				for (unsigned int k=0;k<numLines[2];++k)
 				{
-					E_field(d, i, j, k) *= E_factor[d];
-					H_field(d, i, j, k) *= H_factor[d];
+					E_field[d][i][j][k] *= E_factor[d];
+					H_field[d][i][j][k] *= H_factor[d];
 				}
 
 	return this->AddSinglePlane(lines, numLines, E_field, H_field, MeshType);
 }
 
-bool nf2ff_calc::AddPlane(float **lines, unsigned int* numLines, ArrayLib::ArrayNIJK<std::complex<float>> &E_field, ArrayLib::ArrayNIJK<std::complex<float>> &H_field, int MeshType)
+bool nf2ff_calc::AddPlane(float **lines, unsigned int* numLines, complex<float>**** E_field, complex<float>**** H_field, int MeshType)
 {
 	this->AddSinglePlane(lines, numLines, E_field, H_field, MeshType);
 
@@ -315,16 +319,16 @@ bool nf2ff_calc::AddPlane(float **lines, unsigned int* numLines, ArrayLib::Array
 
 			break;
 		}
-		//check if two planes are on
+		//check if two planes are on 
 		else if ((m_MirrorType[n]==MIRROR_OFF) && (m_MirrorType[nP]!=MIRROR_OFF) && (m_MirrorType[nPP]!=MIRROR_OFF))
 		{
 			this->AddMirrorPlane(nP, lines, numLines, E_field, H_field, MeshType);
 			this->AddMirrorPlane(nPP, lines, numLines, E_field, H_field, MeshType);
 			this->AddMirrorPlane(nP, lines, numLines, E_field, H_field, MeshType);
-
+      
 			for (unsigned int i=0;i<numLines[nPP];++i)
 				lines[nPP][i] = 2.0*m_MirrorPos[nPP] - lines[nPP][i];
-
+			
 			break;
 		}
 	}
@@ -345,12 +349,12 @@ bool nf2ff_calc::AddPlane(float **lines, unsigned int* numLines, ArrayLib::Array
 	}
 
 	//cleanup E- & H-Fields
-	E_field.Reset();
-	H_field.Reset();
+	Delete_N_3DArray(E_field,numLines);
+	Delete_N_3DArray(H_field,numLines);
 	return true;
 }
 
-bool nf2ff_calc::AddSinglePlane(float **lines, unsigned int* numLines, ArrayLib::ArrayNIJK<std::complex<float>> &E_field, ArrayLib::ArrayNIJK<std::complex<float>> &H_field, int MeshType)
+bool nf2ff_calc::AddSinglePlane(float **lines, unsigned int* numLines, complex<float>**** E_field, complex<float>**** H_field, int MeshType)
 {
 	//find normal direction
 	int ny = this->GetNormalDir(numLines);
@@ -362,8 +366,8 @@ bool nf2ff_calc::AddSinglePlane(float **lines, unsigned int* numLines, ArrayLib:
 	int nP  = (ny+1)%3;
 	int nPP = (ny+2)%3;
 
-	ArrayLib::ArrayNIJK<std::complex<float>> Js("Js", numLines);
-	ArrayLib::ArrayNIJK<std::complex<float>> Ms("Ms", numLines);
+	complex<float>**** Js = Create_N_3DArray<complex<float> >(numLines);
+	complex<float>**** Ms = Create_N_3DArray<complex<float> >(numLines);
 
 	float normDir[3]= {0,0,0};
 	if (lines[ny][0]>=m_centerCoord[ny])
@@ -409,8 +413,8 @@ bool nf2ff_calc::AddSinglePlane(float **lines, unsigned int* numLines, ArrayLib:
 			for (pos[2]=0; pos[2]<numLines[2]; ++pos[2])
 			{
 				area = edge_length_P[pos[nP]]*edge_length_PP[pos[nPP]];
-				power = (E_field(nP, pos[0], pos[1], pos[2])*conj(H_field(nPP, pos[0], pos[1], pos[2])) \
-						 - E_field(nPP, pos[0], pos[1], pos[2])*conj(H_field(nP, pos[0], pos[1], pos[2])));
+				power = (E_field[nP][pos[0]][pos[1]][pos[2]]*conj(H_field[nPP][pos[0]][pos[1]][pos[2]]) \
+						 - E_field[nPP][pos[0]][pos[1]][pos[2]]*conj(H_field[nP][pos[0]][pos[1]][pos[2]]));
 				m_radPower += 0.5*area*real(power)*normDir[ny];
 			}
 	unsigned int numAngles[2] = {m_numTheta, m_numPhi};
@@ -431,14 +435,14 @@ bool nf2ff_calc::AddSinglePlane(float **lines, unsigned int* numLines, ArrayLib:
 		thread_data[n].lines=lines;
 		thread_data[n].edge_length_P=edge_length_P;
 		thread_data[n].edge_length_PP=edge_length_PP;
-		thread_data[n].E_field=&E_field;
-		thread_data[n].H_field=&H_field;
-		thread_data[n].Js=&Js;
-		thread_data[n].Ms=&Ms;
-		thread_data[n].m_Nt=new ArrayLib::ArrayIJ<complex<double> >("Nt", numAngles);
-		thread_data[n].m_Np=new ArrayLib::ArrayIJ<complex<double> >("Np", numAngles);
-		thread_data[n].m_Lt=new ArrayLib::ArrayIJ<complex<double> >("Lt", numAngles);
-		thread_data[n].m_Lp=new ArrayLib::ArrayIJ<complex<double> >("Lp", numAngles);
+		thread_data[n].E_field=E_field;
+		thread_data[n].H_field=H_field;
+		thread_data[n].Js=Js;
+		thread_data[n].Ms=Ms;
+		thread_data[n].m_Nt=Create2DArray<complex<double> >(numAngles);
+		thread_data[n].m_Np=Create2DArray<complex<double> >(numAngles);
+		thread_data[n].m_Lt=Create2DArray<complex<double> >(numAngles);
+		thread_data[n].m_Lp=Create2DArray<complex<double> >(numAngles);
 
 		boost::thread *t = new boost::thread( nf2ff_calc_thread(this,start,stop,n,thread_data[n]) );
 
@@ -457,25 +461,25 @@ bool nf2ff_calc::AddSinglePlane(float **lines, unsigned int* numLines, ArrayLib:
 
 	m_Barrier->wait(); //combine all thread local Nt,Np,Lt and Lp
 
-	ArrayLib::ArrayIJ<complex<float>> Nt("l_Nt", numAngles);
-	ArrayLib::ArrayIJ<complex<float>> Np("l_Np", numAngles);
-	ArrayLib::ArrayIJ<complex<float>> Lt("l_Lt", numAngles);
-	ArrayLib::ArrayIJ<complex<float>> Lp("l_Lp", numAngles);
+	complex<float>** Nt = Create2DArray<complex<float> >(numAngles);
+	complex<float>** Np = Create2DArray<complex<float> >(numAngles);
+	complex<float>** Lt = Create2DArray<complex<float> >(numAngles);
+	complex<float>** Lp = Create2DArray<complex<float> >(numAngles);
 
 	for (unsigned int n=0; n<m_numThreads; n++)
 	{
 		for (unsigned int tn=0;tn<m_numTheta;++tn)
 			for (unsigned int pn=0;pn<m_numPhi;++pn)
 			{
-				Nt(tn, pn) += (*thread_data[n].m_Nt)(tn, pn);
-				Np(tn, pn) += (*thread_data[n].m_Np)(tn, pn);
-				Lt(tn, pn) += (*thread_data[n].m_Lt)(tn, pn);
-				Lp(tn, pn) += (*thread_data[n].m_Lp)(tn, pn);
+				Nt[tn][pn] += thread_data[n].m_Nt[tn][pn];
+				Np[tn][pn] += thread_data[n].m_Np[tn][pn];
+				Lt[tn][pn] += thread_data[n].m_Lt[tn][pn];
+				Lp[tn][pn] += thread_data[n].m_Lp[tn][pn];
 			}
-		delete thread_data[n].m_Nt;
-		delete thread_data[n].m_Np;
-		delete thread_data[n].m_Lt;
-		delete thread_data[n].m_Lp;
+		Delete2DArray(thread_data[n].m_Nt,numAngles);
+		Delete2DArray(thread_data[n].m_Np,numAngles);
+		Delete2DArray(thread_data[n].m_Lt,numAngles);
+		Delete2DArray(thread_data[n].m_Lp,numAngles);
 	}
 
 	m_Barrier->wait(); //wait for termination
@@ -484,45 +488,41 @@ bool nf2ff_calc::AddSinglePlane(float **lines, unsigned int* numLines, ArrayLib:
 	m_Barrier = NULL;
 
 	//cleanup Js & Ms
-	Js.Reset();
-	Ms.Reset();
-
-	ArrayLib::ArrayIJ<std::complex<double>>& E_theta = *m_E_theta;
-	ArrayLib::ArrayIJ<std::complex<double>>& E_phi   = *m_E_phi;
-	ArrayLib::ArrayIJ<std::complex<double>>& H_theta = *m_H_theta;
-	ArrayLib::ArrayIJ<std::complex<double>>& H_phi   = *m_H_phi;
-	ArrayLib::ArrayIJ<double>& P_rad = *m_P_rad;
+	Delete_N_3DArray(Js,numLines);
+	Delete_N_3DArray(Ms,numLines);
 
 	// calc equations 8.23a/b and 8.24a/b
-	float k = 2*PI*m_freq/C0*sqrt(m_permittivity*m_permeability);
-	complex<float> factor(0,k/4.0/PI/m_radius);
+	float k = 2*M_PI*m_freq/__C0__*sqrt(m_permittivity*m_permeability);
+	complex<float> factor(0,k/4.0/M_PI/m_radius);
 	complex<float> f_exp(0,-1*k*m_radius);
 	factor *= exp(f_exp);
-	float fZ0 = Z0 * sqrt(m_permeability/m_permittivity);
-	complex<float> z_wave = fZ0;
+	float fZ0 = __Z0__ * sqrt(m_permeability/m_permittivity);
+	complex<float> Z0 = fZ0;
 	float P_max = 0;
 	for (unsigned int tn=0;tn<m_numTheta;++tn)
 		for (unsigned int pn=0;pn<m_numPhi;++pn)
 		{
-			E_theta(tn, pn) -= factor*(Lp(tn, pn) + z_wave*Nt(tn, pn));
-			E_phi(tn, pn)   += factor*(Lt(tn, pn) - z_wave*Np(tn, pn));
+			m_E_theta[tn][pn] -= factor*(Lp[tn][pn] + Z0*Nt[tn][pn]);
+			m_E_phi[tn][pn] += factor*(Lt[tn][pn] - Z0*Np[tn][pn]);
 
-			H_theta(tn, pn) += factor*(Np(tn, pn) - Lt(tn, pn)/z_wave);
-			H_phi(tn, pn)   -= factor*(Nt(tn, pn) + Lp(tn, pn)/z_wave);
+			m_H_theta[tn][pn] += factor*(Np[tn][pn] - Lt[tn][pn]/Z0);
+			m_H_phi[tn][pn] -= factor*(Nt[tn][pn] + Lp[tn][pn]/Z0);
 
-			P_rad(tn, pn) = abs((E_theta(tn, pn)*conj(E_theta(tn, pn))+E_phi(tn, pn)*conj(E_phi(tn, pn))))/(2*fZ0);
-			if (P_rad(tn, pn)>P_max)
-				P_max = P_rad(tn, pn);
+			m_P_rad[tn][pn] = abs((m_E_theta[tn][pn]*conj(m_E_theta[tn][pn])+m_E_phi[tn][pn]*conj(m_E_phi[tn][pn])))/(2*fZ0);
+			if (m_P_rad[tn][pn]>P_max)
+				P_max = m_P_rad[tn][pn];
 		}
 
 	//cleanup Nx and Lx
+	Delete2DArray(Nt,numAngles);
+	Delete2DArray(Np,numAngles);
+	Delete2DArray(Lt,numAngles);
+	Delete2DArray(Lp,numAngles);
 	delete[] edge_length_P; edge_length_P=NULL;
 	delete[] edge_length_PP; edge_length_PP=NULL;
 	delete[] thread_data; thread_data=NULL;
 
-	// Maximum directivity (unitless) across sampled angles theta and phi
-	// P_max (W/m^2), m_radPower (W), m_radius (m)
-	m_maxDir = P_max * (4*PI * m_radius*m_radius / m_radPower);
+	m_maxDir = 4*M_PI*P_max / m_radPower;
 
 	return true;
 }

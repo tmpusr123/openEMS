@@ -22,9 +22,6 @@
 #include "processfields.h"
 #include "FDTD/engine_interface_fdtd.h"
 
-using std::cerr;
-using std::endl;
-
 ProcessFields::ProcessFields(Engine_Interface_Base* eng_if) : Processing(eng_if)
 {
 	m_DumpType = E_FIELD_DUMP;
@@ -62,7 +59,7 @@ ProcessFields::~ProcessFields()
 	}
 }
 
-std::string ProcessFields::GetFieldNameByType(DumpType type)
+string ProcessFields::GetFieldNameByType(DumpType type)
 {
 	switch (type)
 	{
@@ -157,11 +154,7 @@ void ProcessFields::InitProcess()
 		#endif
 		m_HDF5_Dump_File->WriteRectMesh(numLines,discLines,(int)m_Mesh_Type,discScaling);
 
-		m_HDF5_Dump_File->WriteAttribute("/", "openEMS_HDF5_version", OPENEMS_HDF5_VERSION);
-		m_HDF5_Dump_File->WriteAttribute("/", "dump_type", m_DumpType);
-		m_HDF5_Dump_File->WriteAttribute("/", "dual_mesh", m_dualMesh);
-		if ((m_DumpType!=SAR_RAW_DATA) && (g_settings.GetLegacyHDF5Dumps()))
-			m_HDF5_Dump_File->WriteAttribute("/", "legacy_fmt", true);
+		m_HDF5_Dump_File->WriteAtrribute("/","openEMS_HDF5_version",0.2);
 	}
 }
 
@@ -226,7 +219,7 @@ void ProcessFields::CalcMeshPos()
 {
 	if ((m_SampleType==SUBSAMPLE) || (m_SampleType==NONE))
 	{
-		std::vector<unsigned int> tmp_pos;
+		vector<unsigned int> tmp_pos;
 
 		for (int n=0; n<3; ++n)
 		{
@@ -249,7 +242,7 @@ void ProcessFields::CalcMeshPos()
 	}
 	if ((m_SampleType==OPT_RESOLUTION))
 	{
-		std::vector<unsigned int> tmp_pos;
+		vector<unsigned int> tmp_pos;
 		double oldPos=0;
 		for (int n=0; n<3; ++n)
 		{
@@ -284,12 +277,12 @@ void ProcessFields::CalcMeshPos()
 	}
 }
 
-bool ProcessFields::CalcField(ArrayLib::ArrayNIJK<FDTD_FLOAT> &field)
+FDTD_FLOAT**** ProcessFields::CalcField()
 {
 	unsigned int pos[3];
 	double out[3];
-	//init the array
-	field.Init("Field", numLines);
+	//create array
+	FDTD_FLOAT**** field = Create_N_3DArray<FDTD_FLOAT>(numLines);
 	switch (m_DumpType)
 	{
 	case E_FIELD_DUMP:
@@ -304,13 +297,13 @@ bool ProcessFields::CalcField(ArrayLib::ArrayNIJK<FDTD_FLOAT> &field)
 					pos[2]=posLines[2][k];
 
 					m_Eng_Interface->GetEField(pos,out);
-					field(0, i, j, k) = out[0];
-					field(1, i, j, k) = out[1];
-					field(2, i, j, k) = out[2];
+					field[0][i][j][k] = out[0];
+					field[1][i][j][k] = out[1];
+					field[2][i][j][k] = out[2];
 				}
 			}
 		}
-		return true;
+		return field;
 	case H_FIELD_DUMP:
 		for (unsigned int i=0; i<numLines[0]; ++i)
 		{
@@ -323,13 +316,13 @@ bool ProcessFields::CalcField(ArrayLib::ArrayNIJK<FDTD_FLOAT> &field)
 					pos[2]=posLines[2][k];
 
 					m_Eng_Interface->GetHField(pos,out);
-					field(0, i, j, k) = out[0];
-					field(1, i, j, k) = out[1];
-					field(2, i, j, k) = out[2];
+					field[0][i][j][k] = out[0];
+					field[1][i][j][k] = out[1];
+					field[2][i][j][k] = out[2];
 				}
 			}
 		}
-		return true;
+		return field;
 	case J_FIELD_DUMP:
 		for (unsigned int i=0; i<numLines[0]; ++i)
 		{
@@ -342,13 +335,13 @@ bool ProcessFields::CalcField(ArrayLib::ArrayNIJK<FDTD_FLOAT> &field)
 					pos[2]=posLines[2][k];
 
 					m_Eng_Interface->GetJField(pos,out);
-					field(0, i, j, k) = out[0];
-					field(1, i, j, k) = out[1];
-					field(2, i, j, k) = out[2];
+					field[0][i][j][k] = out[0];
+					field[1][i][j][k] = out[1];
+					field[2][i][j][k] = out[2];
 				}
 			}
 		}
-		return true;
+		return field;
 	case ROTH_FIELD_DUMP:
 		for (unsigned int i=0; i<numLines[0]; ++i)
 		{
@@ -361,13 +354,13 @@ bool ProcessFields::CalcField(ArrayLib::ArrayNIJK<FDTD_FLOAT> &field)
 					pos[2]=posLines[2][k];
 
 					m_Eng_Interface->GetRotHField(pos,out);
-					field(0, i, j, k) = out[0];
-					field(1, i, j, k) = out[1];
-					field(2, i, j, k) = out[2];
+					field[0][i][j][k] = out[0];
+					field[1][i][j][k] = out[1];
+					field[2][i][j][k] = out[2];
 				}
 			}
 		}
-		return true;
+		return field;
 	case D_FIELD_DUMP:
 		for (unsigned int i=0; i<numLines[0]; ++i)
 		{
@@ -380,13 +373,13 @@ bool ProcessFields::CalcField(ArrayLib::ArrayNIJK<FDTD_FLOAT> &field)
 					pos[2]=posLines[2][k];
 
 					m_Eng_Interface->GetDField(pos,out);
-					field(0, i, j, k) = out[0];
-					field(1, i, j, k) = out[1];
-					field(2, i, j, k) = out[2];
+					field[0][i][j][k] = out[0];
+					field[1][i][j][k] = out[1];
+					field[2][i][j][k] = out[2];
 				}
 			}
 		}
-		return true;
+		return field;
 	case B_FIELD_DUMP:
 		for (unsigned int i=0; i<numLines[0]; ++i)
 		{
@@ -399,16 +392,16 @@ bool ProcessFields::CalcField(ArrayLib::ArrayNIJK<FDTD_FLOAT> &field)
 					pos[2]=posLines[2][k];
 
 					m_Eng_Interface->GetBField(pos,out);
-					field(0, i, j, k) = out[0];
-					field(1, i, j, k) = out[1];
-					field(2, i, j, k) = out[2];
+					field[0][i][j][k] = out[0];
+					field[1][i][j][k] = out[1];
+					field[2][i][j][k] = out[2];
 				}
 			}
 		}
-		return true;
+		return field;
 	default:
 		cerr << "ProcessFields::CalcField(): Error, unknown dump type..." << endl;
-		return false;
+		return field;
 	}
 }
 

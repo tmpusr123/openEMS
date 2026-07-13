@@ -44,7 +44,7 @@ public:
 protected:
 	void ownError(void);
 	unsigned int NoMsg;
-	char **Msg=NULL;
+	char **Msg;
 };
 
 #endif //_ERRORMSG_H_

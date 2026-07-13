@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <vector>
 
+using namespace std;
+
 #define EXPENSE_LOG 0
 #define MRD 1000000000
 
@@ -84,7 +86,7 @@ public:
 	void PrintAll(FILE *file=stdout);
 	void ClearAll();
 protected:
-	std::vector<ExpenseModule*> vModules;
+	vector<ExpenseModule*> vModules;
 };
 
 

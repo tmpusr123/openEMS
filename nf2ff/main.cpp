@@ -1,5 +1,5 @@
 /*
-*	Copyright (C) 2012 Thorsten Liebig (Thorsten.Liebig@gmx.de)
+*	Copyright (C) 2012-2023 Thorsten Liebig (Thorsten.Liebig@gmx.de)
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -25,14 +25,20 @@ int main(int argc, char *argv[])
 {
 	cout << " ---------------------------------------------------------------------- " << endl;
 	cout << " | nf2ff, near-field to far-field transformation for openEMS " << endl;
-	cout << " | (C) 2012-2025 Thorsten Liebig <thorsten.liebig@gmx.de>  GPL license" << endl;
+	cout << " | (C) 2012-2023 Thorsten Liebig <thorsten.liebig@gmx.de>  GPL license" << endl;
 	cout << " ---------------------------------------------------------------------- " << endl;
 
 	if (argc<=1)
 	{
-		cout << " Usage: nf2ff <nf2ff-xml-file>" << endl;
-		return EXIT_FAILURE;
+		cout << " Usage: nf2ff <nf2ff-xml-file>" << endl << endl;
+		cout << endl;
+		exit(-1);
 	}
 
-	return !nf2ff::AnalyseXMLFile(argv[argc-1]);
+	if (argc>=2)
+	{
+		return !nf2ff::AnalyseXMLFile(argv[argc-1]);
+	}
+
+	return 0;
 }

@@ -16,6 +16,7 @@
 *	along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <new>
 #include <cstring>
 #include <iostream>
 #include "global.h"
@@ -31,10 +32,8 @@ Global::Global()
 {
 	m_showProbeDiscretization = false;
 	m_nativeFieldDumps = false;
-	m_legacyHDF5 = false;
 	m_VerboseLevel = 0;
-	m_SavedVerboseLevel = 0;
-	m_optionDesc = NULL;
+
 }
 
 po::options_description
@@ -67,18 +66,6 @@ Global::optionDesc()
 			"Dump all fields using the native field components"
 		)
 		(
-			"legacyHDF5Dumps",
-			po::bool_switch()->notifier(
-				[&](bool val)
-				{
-					if (!val) return;
-					cout << "openEMS - dumping all fields using the legacy HDF5 file format as required for Octave/Matlab import" << endl;
-					m_legacyHDF5 = true;
-				}
-			),
-			"Dump all fields using the legacy HDF5 file format as required for Octave/Matlab import"
-		)
-		(
 			"verbose,v",
 			po::value<unsigned int>()->default_value(0)->implicit_value(1)->
 			notifier(
@@ -100,18 +87,17 @@ Global::optionDesc()
 	return optdesc;
 }
 
-void Global::clearOptionDesc()
-{
-	delete m_optionDesc;
-	m_optionDesc = NULL;
-}
-
 void Global::appendOptionDesc(po::options_description desc)
 {
-	if (m_optionDesc == NULL)
-		m_optionDesc = new po::options_description();
+	m_optionDesc.add(desc);
+}
 
-	m_optionDesc->add(desc);
+void Global::clearOptionDesc()
+{
+	// options_description has const members, so operator= is deleted; reset it
+	// by destroying and reconstructing the member in place.
+	m_optionDesc.~options_description();
+	new (&m_optionDesc) po::options_description();
 }
 
 void Global::parseLibraryArguments(std::vector<std::string> allOptions)
@@ -128,7 +114,7 @@ void Global::parseLibraryArguments(std::vector<std::string> allOptions)
 
 	// may throw
 	po::store(
-		po::command_line_parser(allOptions).options(*m_optionDesc)
+		po::command_line_parser(allOptions).options(m_optionDesc)
 			.style(
 				po::command_line_style::unix_style |
 				po::command_line_style::case_insensitive)
@@ -163,7 +149,7 @@ void Global::parseCommandLineArguments(int argc, const char* argv[])
 
 	// may throw
 	po::store(
-		po::command_line_parser(argc, argv).options(*m_optionDesc)
+		po::command_line_parser(argc, argv).options(m_optionDesc)
 			.style(
 				po::command_line_style::unix_style |
 				po::command_line_style::case_insensitive)
@@ -177,7 +163,7 @@ void Global::parseCommandLineArguments(int argc, const char* argv[])
 
 void Global::showOptionUsage(std::ostream& ostr)
 {
-	ostr << *m_optionDesc << endl;
+	ostr << m_optionDesc << endl;
 }
 
 bool Global::hasOption(std::string option)

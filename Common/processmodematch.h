@@ -19,8 +19,6 @@
 #define PROCESSMODEMATCH_H
 
 #include "processintegral.h"
-#include "CSModeData.h"
-#include "../tools/arraylib/array_ijk.h"
 
 class CSFunctionParser;
 
@@ -44,15 +42,8 @@ public:
 
 	//! Set the field type (0 electric field, 1 magnetic field)
 	void SetFieldType(int type);
-	//! Set the weight function in the given direction ny. For example: SetWeightFunction(0,"cos(pi/1000*x)*sin(pi/500*y)");
-	void SetWeightFunction(int ny, std::string function);
-
-	void SetWeightFile(std::string fileName);
-	std::string GetWeightFile() {return m_WeightFile;};
-
-	//! Set the weight origin (drawing units). Coordinates passed to weight functions
-	//! and weight files are shifted by this offset before evaluation.
-	void SetWeightOrigin(double x, double y, double z) { m_WeightOrigin[0]=x; m_WeightOrigin[1]=y; m_WeightOrigin[2]=z; }
+	//! Set the mode function in the given direction ny. For example: SetModeFunction(0,"cos(pi/1000*x)*sin(pi/500*y)");
+	void SetModeFunction(int ny, std::string function);
 
 	virtual int GetNumberOfIntegrals() const {return 2;}
 	virtual double* CalcMultipleIntegrals();
@@ -67,14 +58,11 @@ protected:
 	double GetEField(int ny, const unsigned int pos[3]);
 	double GetHField(int ny, const unsigned int pos[3]);
 
-	std::string m_WeightFunction[3];
+	std::string m_ModeFunction[3];
 	CSFunctionParser* m_ModeParser[2];
 
-	std::string m_WeightFile;
-	double m_WeightOrigin[3];
-
 	unsigned int m_numLines[2];
-	ArrayLib::ArrayIJK<double> m_ModeDist;
+	double** m_ModeDist[2];
 };
 
 #endif // PROCESSMODEMATCH_H

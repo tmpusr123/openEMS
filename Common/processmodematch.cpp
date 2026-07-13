@@ -1,6 +1,5 @@
 /*
 *	Copyright (C) 2010 Thorsten Liebig (Thorsten.Liebig@gmx.de)
-*	Copyright (C) 2025 Gadi Lahav <gadi@rfwithcare.com>
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -19,21 +18,19 @@
 #include "processmodematch.h"
 #include "CSFunctionParser.h"
 #include "Common/operator_base.h"
+#include "tools/array_ops.h"
 
 using namespace std;
 
 ProcessModeMatch::ProcessModeMatch(Engine_Interface_Base* eng_if) : ProcessIntegral(eng_if)
 {
-	m_ny = 0;
-	m_ModeFieldType = 0;
 	for (int n=0; n<2; ++n)
 	{
 		m_ModeParser[n] = new CSFunctionParser();
+		m_ModeDist[n] = NULL;
 	}
 	delete[] m_Results;
 	m_Results = new double[2];
-	m_WeightFile.clear();
-	m_WeightOrigin[0] = m_WeightOrigin[1] = m_WeightOrigin[2] = 0.0;
 }
 
 ProcessModeMatch::~ProcessModeMatch()
@@ -41,6 +38,7 @@ ProcessModeMatch::~ProcessModeMatch()
 	for (int n=0; n<2; ++n)
 	{
 		delete m_ModeParser[n];
+		m_ModeParser[n] = NULL;
 	}
 	Reset();
 }
@@ -82,7 +80,6 @@ void ProcessModeMatch::InitProcess()
 	}
 	m_Eng_Interface->SetInterpolationType(Engine_Interface_Base::NODE_INTERPOLATE);
 
-	bool dualMesh = m_ModeFieldType==1;
 	int Dump_Dim=0;
 	m_ny = -1;
 	for (int n=0; n<3; ++n)
@@ -98,10 +95,6 @@ void ProcessModeMatch::InitProcess()
 		if (start[n]==0)
 			++start[n];
 		if (stop[n]==Op->GetNumberOfLines(n)-1)
-			--stop[n];
-		else if ((dualMesh) && (stop[n]>(start[n]+1)))
-			// stop is on the end of the box,
-			// the dual mesh add half a cell and would go beyond the box
 			--stop[n];
 
 		if (stop[n]!=start[n])
@@ -124,47 +117,34 @@ void ProcessModeMatch::InitProcess()
 	m_numLines[0] = stop[nP] - start[nP] + 1;
 	m_numLines[1] = stop[nPP] - start[nPP] + 1;
 
-	// Check that this isn't a custom mode, before running this test
-	if (m_WeightFile.empty())
+	for (int n=0; n<2; ++n)
 	{
-		for (int n=0; n<2; ++n)
+		int ny = (m_ny+n+1)%3;
+		int res = m_ModeParser[n]->Parse(m_ModeFunction[ny], "x,y,z,rho,a,r,t");
+		if (res >= 0)
 		{
-			int ny = (m_ny+n+1)%3;
-			int res = m_ModeParser[n]->Parse(m_WeightFunction[ny], "x,y,z,rho,a,r,t");
-			if (res >= 0)
-			{
-				cerr << "ProcessModeMatch::InitProcess(): Warning, an error occurred parsing the mode matching function (see below) ..." << endl;
-				cerr << m_WeightFunction[ny] << "\n" << string(res, ' ') << "^\n" << m_ModeParser[n]->ErrorMsg() << "\n";
-				SetEnable(false);
-				Reset();
-			}
+			cerr << "ProcessModeMatch::InitProcess(): Warning, an error occurred parsing the mode matching function (see below) ..." << endl;
+			cerr << m_ModeFunction[ny] << "\n" << string(res, ' ') << "^\n" << m_ModeParser[n]->ErrorMsg() << "\n";
+			SetEnable(false);
+			Reset();
 		}
 	}
 
-	m_ModeDist.Init("ModeDist", {2, m_numLines[0], m_numLines[1]});
+	for (int n=0; n<2; ++n)
+	{
+		m_ModeDist[n] = Create2DArray<double>(m_numLines);
+	}
 
+	bool dualMesh = m_ModeFieldType==1;
 	unsigned int pos[3] = {0,0,0};
 	double discLine[3] = {0,0,0};
+	double gridDelta = 1; // 1 -> mode-matching function is defined in drawing units...
 	double var[7];
 	pos[m_ny] = start[m_ny];
 	discLine[m_ny] = Op->GetDiscLine(m_ny,pos[m_ny],dualMesh);
 	double norm = 0;
 	double area = 0;
-
-	// If necessary, load the HDF5 mode file now
-	CSModeData modeFile;
-	if (!m_WeightFile.empty())
-	{
-		if (!modeFile.ReadFromHDF5(m_WeightFile))
-		{
-			cerr << "ProcessModeMatch::InitProcess(): Error loading mode file '" << m_WeightFile << "', disabling probe." << endl;
-			SetEnable(false);
-			Reset();
-			return;
-		}
-	}
-
-	for (unsigned int posP = 0; posP < m_numLines[0]; ++posP)
+	for (unsigned int posP = 0; posP<m_numLines[0]; ++posP)
 	{
 		pos[nP] = start[nP] + posP;
 		discLine[nP] = Op->GetDiscLine(nP,pos[nP],dualMesh);
@@ -173,60 +153,46 @@ void ProcessModeMatch::InitProcess()
 			pos[nPP] = start[nPP] + posPP;
 			discLine[nPP] = Op->GetDiscLine(nPP,pos[nPP],dualMesh);
 
-			// Apply local coordinate origin — shifts both weight functions and mode
-			// files into the port's local coordinate system.
-			double lx = discLine[0] - m_WeightOrigin[0];
-			double ly = discLine[1] - m_WeightOrigin[1];
-			double lz = discLine[2] - m_WeightOrigin[2];
-
-			var[0] = lx; // x
-			var[1] = ly; // y
-			var[2] = lz; // z
-			var[3] = sqrt(lx*lx + ly*ly); // rho = sqrt(x^2 + y^2)
-			var[4] = atan2(ly, lx); // a = atan(y,x)
-			var[5] = sqrt(lx*lx + ly*ly + lz*lz); // r
-			var[6] = asin(1)-atan(lz/var[3]); //theta (t)
+			var[0] = discLine[0] * gridDelta; // x
+			var[1] = discLine[1] * gridDelta; // y
+			var[2] = discLine[2] * gridDelta; // z
+			var[3] = sqrt(discLine[0]*discLine[0] + discLine[1]*discLine[1]) * gridDelta; // rho = sqrt(x^2 + y^2)
+			var[4] = atan2(discLine[1], discLine[0]); // a = atan(y,x)
+			var[5] = sqrt(pow(discLine[0],2)+pow(discLine[1],2)+pow(discLine[2],2)) * gridDelta; // r
+			var[6] = asin(1)-atan(var[2]/var[3]); //theta (t)
 
 			if (m_Mesh_Type == CYLINDRICAL_MESH)
 			{
-				var[3] = discLine[0]; // rho (not shifted — cylindrical origin is axis)
+				var[3] = discLine[0] * gridDelta; // rho
 				var[4] = discLine[1]; // a
-				var[0] = discLine[0] * cos(discLine[1]); // x = r*cos(a)
-				var[1] = discLine[0] * sin(discLine[1]); // y = r*sin(a)
-				var[5] = sqrt(pow(discLine[0],2)+pow(discLine[2],2)); // r
+				var[0] = discLine[0] * cos(discLine[1]) * gridDelta; // x = r*cos(a)
+				var[1] = discLine[0] * sin(discLine[1]) * gridDelta; // y = r*sin(a)
+				var[5] = sqrt(pow(discLine[0],2)+pow(discLine[2],2)) * gridDelta; // r
 				var[6] = asin(1)-atan(var[2]/var[3]); //theta (t)
 			}
 			area = Op->GetNodeArea(m_ny,pos,dualMesh);
-
-			if (!m_WeightFile.empty())
-			{
-				auto fields = modeFile.LinInterp2(var[nP], var[nPP]);
-				m_ModeDist(0, posP, posPP) = fields[0];
-				m_ModeDist(1, posP, posPP) = fields[1];
-			}
-			else
-				for (int n = 0; n < 2; ++n)
-				{
-					m_ModeDist(n, posP, posPP) = m_ModeParser[n]->Eval(var);
-					if ((std::isnan(m_ModeDist(n, posP, posPP))) || (std::isinf(m_ModeDist(n, posP, posPP))))
-						m_ModeDist(n, posP, posPP) = 0.0;
-				}
-
 			for (int n=0; n<2; ++n)
-				norm += pow(m_ModeDist(n, posP, posPP),2) * area;
-
+			{
+				m_ModeDist[n][posP][posPP] = m_ModeParser[n]->Eval(var); //calc mode template
+				if ((std::isnan(m_ModeDist[n][posP][posPP])) || (std::isinf(m_ModeDist[n][posP][posPP])))
+					m_ModeDist[n][posP][posPP] = 0.0;
+				norm += pow(m_ModeDist[n][posP][posPP],2) * area;
+			}
+//			cerr << discLine[0] << " " << discLine[1] << " : " << m_ModeDist[0][posP][posPP] << " , " << m_ModeDist[1][posP][posPP] << endl;
 		}
 	}
 
 	norm = sqrt(norm);
+//	cerr << norm << endl;
 	// normalize template function...
 	for (unsigned int posP = 0; posP<m_numLines[0]; ++posP)
 		for (unsigned int posPP = 0; posPP<m_numLines[1]; ++posPP)
 		{
 			for (int n=0; n<2; ++n)
 			{
-				m_ModeDist(n, posP, posPP) /= norm;
+				m_ModeDist[n][posP][posPP] /= norm;
 			}
+//			cerr << posP << " " << posPP << " : " << m_ModeDist[0][posP][posPP] << " , " << m_ModeDist[1][posP][posPP] << endl;
 		}
 
 	ProcessIntegral::InitProcess();
@@ -235,15 +201,18 @@ void ProcessModeMatch::InitProcess()
 void ProcessModeMatch::Reset()
 {
 	ProcessIntegral::Reset();
-	m_ModeDist.Reset();
+	for (int n=0; n<2; ++n)
+	{
+		Delete2DArray<double>(m_ModeDist[n],m_numLines);
+		m_ModeDist[n] = NULL;
+	}
 }
 
-void ProcessModeMatch::SetWeightFunction(int ny, string function)
+
+void ProcessModeMatch::SetModeFunction(int ny, string function)
 {
 	if ((ny<0) || (ny>2)) return;
-	m_WeightFunction[ny] = function;
-
-	this->m_WeightFile.clear();
+	m_ModeFunction[ny] = function;
 }
 
 void ProcessModeMatch::SetFieldType(int type)
@@ -259,7 +228,7 @@ double* ProcessModeMatch::CalcMultipleIntegrals()
 	double field = 0;
 	double purity = 0;
 	double area = 0;
-	bool dualMesh = m_ModeFieldType==1;
+    bool dualMesh = m_ModeFieldType==1;
 
 	int nP = (m_ny+1)%3;
 	int nPP = (m_ny+2)%3;
@@ -284,7 +253,7 @@ double* ProcessModeMatch::CalcMultipleIntegrals()
 			for (int n=0; n<2; ++n)
 			{
 				field = out[(m_ny+n+1)%3];
-				value += field * m_ModeDist(n, posP, posPP) * area;
+				value += field * m_ModeDist[n][posP][posPP] * area;
 				purity += field*field * area;
 			}
 		}
@@ -295,9 +264,4 @@ double* ProcessModeMatch::CalcMultipleIntegrals()
 		m_Results[1] = 0;
 	m_Results[0] = value;
 	return m_Results;
-}
-
-void ProcessModeMatch::SetWeightFile(std::string fileName)
-{
-	m_WeightFile = fileName;
 }

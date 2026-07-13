@@ -7,11 +7,7 @@ ELSE()
 ENDIF()
 
 PROJECT(nf2ff CXX)
-
-# In CMake 4, 3.10 is deprecated and 3.5 has been removed.
-# use 3.0...3.10 so all of these versions are acceptable as min. version.
-# https://cmake.org/cmake/help/latest/command/cmake_minimum_required.html
-cmake_minimum_required(VERSION 3.0...3.10)
+cmake_minimum_required(VERSION 3.1...3.10)
 
 set(LIB_VERSION_MAJOR 0)
 set(LIB_VERSION_MINOR 1)
@@ -55,7 +51,7 @@ TARGET_LINK_LIBRARIES(nf2ff_bin nf2ff)
 
 INSTALL(TARGETS nf2ff_bin DESTINATION bin)
 if (WIN32)
-    INSTALL(TARGETS nf2ff RUNTIME DESTINATION bin ARCHIVE DESTINATION lib${LIB_SUFFIX})
+    INSTALL(TARGETS nf2ff     DESTINATION bin)
 else()
     INSTALL(TARGETS nf2ff     DESTINATION lib${LIB_SUFFIX})
 endif()

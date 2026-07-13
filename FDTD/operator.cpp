@@ -17,12 +17,12 @@
 
 #include <fstream>
 #include <algorithm>
-#include <stdexcept>
 #include "operator.h"
 #include "engine.h"
 #include "extensions/operator_extension.h"
 #include "extensions/operator_ext_excitation.h"
 #include "Common/processfields.h"
+#include "tools/array_ops.h"
 #include "tools/vtk_file_writer.h"
 #include "fparser.hh"
 #include "extensions/operator_ext_excitation.h"
@@ -36,11 +36,6 @@
 
 #include "CSPropMaterial.h"
 #include "CSPropLumpedElement.h"
-
-using std::cout;
-using std::cerr;
-using std::endl;
-using std::flush;
 
 Operator* Operator::New()
 {
@@ -510,7 +505,9 @@ void Operator::SetMaterialAvgMethod(MatAverageMethods method)
 
 double Operator::GetNumberCells() const
 {
-	return (numLines[0])*(numLines[1])*(numLines[2]);
+	if (numLines)
+		return (numLines[0])*(numLines[1])*(numLines[2]); //it's more like number of nodes???
+	return 0;
 }
 
 void Operator::ShowStat() const
@@ -550,7 +547,7 @@ void Operator::ShowExtStat() const
 	cout << "-----------------------------------" << endl;
 }
 
-void Operator::DumpOperator2File(std::string filename)
+void Operator::DumpOperator2File(string filename)
 {
 #ifdef OUTPUT_IN_DRAWINGUNITS
 	double discLines_scaling = 1;
@@ -576,7 +573,7 @@ void Operator::DumpOperator2File(std::string filename)
 			ArrayLib::ArrayNIJK<FDTD_FLOAT> exc("exc", numLines);
 
 			for (unsigned int n=0; n<  Op_Ext_Exc->Volt_Count; ++n)
-				exc(Op_Ext_Exc->Volt_dir[n], Op_Ext_Exc->Volt_index[0][n], Op_Ext_Exc->Volt_index[1][n], Op_Ext_Exc->Volt_index[2][n]) =   Op_Ext_Exc->Volt_amp[n];
+				exc[  Op_Ext_Exc->Volt_dir[n]][  Op_Ext_Exc->Volt_index[0][n]][  Op_Ext_Exc->Volt_index[1][n]][  Op_Ext_Exc->Volt_index[2][n]] =   Op_Ext_Exc->Volt_amp[n];
 			vtk_Writer->AddVectorField("exc_volt",exc);
 		}
 
@@ -585,7 +582,7 @@ void Operator::DumpOperator2File(std::string filename)
 			ArrayLib::ArrayNIJK<FDTD_FLOAT> exc("exc", numLines);
 
 			for (unsigned int n=0; n<  Op_Ext_Exc->Curr_Count; ++n)
-				exc(Op_Ext_Exc->Curr_dir[n], Op_Ext_Exc->Curr_index[0][n], Op_Ext_Exc->Curr_index[1][n], Op_Ext_Exc->Curr_index[2][n]) =   Op_Ext_Exc->Curr_amp[n];
+				exc[  Op_Ext_Exc->Curr_dir[n]][  Op_Ext_Exc->Curr_index[0][n]][  Op_Ext_Exc->Curr_index[1][n]][  Op_Ext_Exc->Curr_index[2][n]] =   Op_Ext_Exc->Curr_amp[n];
 			vtk_Writer->AddVectorField("exc_curr",exc);
 		}
 	}
@@ -601,10 +598,10 @@ void Operator::DumpOperator2File(std::string filename)
 			for (pos[1]=0; pos[1]<numLines[1]; pos[1]++)
 				for (pos[2]=0; pos[2]<numLines[2]; pos[2]++)
 				{
-					vv_temp(n, pos[0], pos[1], pos[2]) = GetVV(n,pos);
-					vi_temp(n, pos[0], pos[1], pos[2]) = GetVI(n,pos);
-					iv_temp(n, pos[0], pos[1], pos[2]) = GetIV(n,pos);
-					ii_temp(n, pos[0], pos[1], pos[2]) = GetII(n,pos);
+					vv_temp[n][pos[0]][pos[1]][pos[2]] = GetVV(n,pos);
+					vi_temp[n][pos[0]][pos[1]][pos[2]] = GetVI(n,pos);
+					iv_temp[n][pos[0]][pos[1]][pos[2]] = GetIV(n,pos);
+					ii_temp[n][pos[0]][pos[1]][pos[2]] = GetII(n,pos);
 				}
 
 
@@ -622,7 +619,7 @@ void Operator::DumpOperator2File(std::string filename)
 //! \brief dump PEC (perfect electric conductor) information (into VTK-file)
 //! visualization via paraview
 //! visualize only one component (x, y or z)
-void Operator::DumpPEC2File(std::string filename , unsigned int *range)
+void Operator::DumpPEC2File(string filename , unsigned int *range)
 {
 	cout << "Operator: Dumping PEC information to vtk file: " << filename << " ..." << flush;
 
@@ -734,7 +731,7 @@ void Operator::DumpPEC2File(std::string filename , unsigned int *range)
 	cout << " done." << endl;
 }
 
-void Operator::DumpMaterial2File(std::string filename)
+void Operator::DumpMaterial2File(string filename)
 {
 #ifdef OUTPUT_IN_DRAWINGUNITS
 	double discLines_scaling = 1;
@@ -754,21 +751,17 @@ void Operator::DumpMaterial2File(std::string filename)
 	{
 		for (pos[1]=0; pos[1]<numLines[1]; ++pos[1])
 		{
-			std::vector<CSPrimitives*> vPrims = this->GetPrimitivesBoundBox(
-				pos[0], pos[1], -1,
-				CSProperties::MATERIAL
-			);
-
+			vector<CSPrimitives*> vPrims = this->GetPrimitivesBoundBox(pos[0], pos[1], -1, CSProperties::MATERIAL);
 			for (pos[2]=0; pos[2]<numLines[2]; ++pos[2])
 			{
 				for (int n=0; n<3; ++n)
 				{
 					double inMat[4];
 					Calc_EffMatPos(n, pos, inMat, vPrims);
-					epsilon(n, pos[0], pos[1], pos[2]) = inMat[0]/EPS0;
-					mue(n, pos[0], pos[1], pos[2])     = inMat[2]/MUE0;
-					kappa(n, pos[0], pos[1], pos[2])   = inMat[1];
-					sigma(n, pos[0], pos[1], pos[2])   = inMat[3];
+					epsilon[n][pos[0]][pos[1]][pos[2]] = inMat[0]/__EPS0__;
+					mue[n][pos[0]][pos[1]][pos[2]]     = inMat[2]/__MUE0__;
+					kappa[n][pos[0]][pos[1]][pos[2]]   = inMat[1];
+					sigma[n][pos[0]][pos[1]][pos[2]]   = inMat[3];
 				}
 			}
 		}
@@ -919,7 +912,7 @@ double Operator::GetDiscMaterial(int type, int n, const unsigned int pos[3]) con
 		else
 		{
 			ArrayLib::ArrayNIJK<float>& m_epsR = *m_epsR_ptr;
-			return m_epsR(n, pos[0], pos[1], pos[2]);
+			return m_epsR[n][pos[0]][pos[1]][pos[2]];
 		}
 	case 1:
 		if (m_kappa_ptr == NULL)
@@ -927,7 +920,7 @@ double Operator::GetDiscMaterial(int type, int n, const unsigned int pos[3]) con
 		else
 		{
 			ArrayLib::ArrayNIJK<float>& m_kappa = *m_kappa_ptr;
-			return m_kappa(n, pos[0], pos[1], pos[2]);
+			return m_kappa[n][pos[0]][pos[1]][pos[2]];
 		}
 	case 2:
 		if (m_mueR_ptr == NULL)
@@ -935,7 +928,7 @@ double Operator::GetDiscMaterial(int type, int n, const unsigned int pos[3]) con
 		else
 		{
 			ArrayLib::ArrayNIJK<float>& m_mueR = *m_mueR_ptr;
-			return m_mueR(n, pos[0], pos[1], pos[2]);
+			return m_mueR[n][pos[0]][pos[1]][pos[2]];
 		}
 	case 3:
 		if (m_sigma_ptr == NULL)
@@ -943,7 +936,7 @@ double Operator::GetDiscMaterial(int type, int n, const unsigned int pos[3]) con
 		else
 		{
 			ArrayLib::ArrayNIJK<float>& m_sigma = *m_sigma_ptr;
-			return m_sigma(n, pos[0], pos[1], pos[2]);
+			return m_sigma[n][pos[0]][pos[1]][pos[2]];
 		}
 	}
 	return 0;
@@ -1062,7 +1055,7 @@ int Operator::CalcECOperator( DebugFlags debugFlags )
 		m_Op_exts.at(n)->BuildExtension();
 
 	//remove inactive extensions
-	std::vector<Operator_Extension*>::iterator it = m_Op_exts.begin();
+	vector<Operator_Extension*>::iterator it = m_Op_exts.begin();
 	while (it!=m_Op_exts.end())
 	{
 		if ( (*it)->IsActive() == false)
@@ -1187,12 +1180,7 @@ void Operator::ApplyMagneticBC(bool* dirs)
 	}
 }
 
-bool Operator::Calc_ECPos(
-	int ny,
-	const unsigned int* pos,
-	double* EC,
-	std::vector<CSPrimitives*> vPrims
-) const
+bool Operator::Calc_ECPos(int ny, const unsigned int* pos, double* EC, vector<CSPrimitives*> vPrims) const
 {
 	double EffMat[4];
 	Calc_EffMatPos(ny,pos,EffMat, vPrims);
@@ -1200,26 +1188,31 @@ bool Operator::Calc_ECPos(
 	if (m_epsR_ptr)
 	{
 		ArrayLib::ArrayNIJK<float>& m_epsR = *m_epsR_ptr;
-		m_epsR(ny, pos[0], pos[1], pos[2]) =  EffMat[0];
+		m_epsR[ny][pos[0]][pos[1]][pos[2]] =  EffMat[0];
 	}
 	if (m_kappa_ptr)
 	{
 		ArrayLib::ArrayNIJK<float>& m_kappa = *m_kappa_ptr;
-		m_kappa(ny, pos[0], pos[1], pos[2]) =  EffMat[1];
+		m_kappa[ny][pos[0]][pos[1]][pos[2]] =  EffMat[1];
 	}
 	if (m_mueR_ptr)
 	{
 		ArrayLib::ArrayNIJK<float>& m_mueR = *m_mueR_ptr;
-		m_mueR(ny, pos[0], pos[1], pos[2]) =  EffMat[2];
+		m_mueR[ny][pos[0]][pos[1]][pos[2]] =  EffMat[2];
 	}
 	if (m_sigma_ptr)
 	{
 		ArrayLib::ArrayNIJK<float>& m_sigma = *m_sigma_ptr;
-		m_sigma(ny, pos[0], pos[1], pos[2]) =  EffMat[3];
+		m_sigma[ny][pos[0]][pos[1]][pos[2]] =  EffMat[3];
 	}
 
 	double delta = GetEdgeLength(ny,pos);
 	double area  = GetEdgeArea(ny,pos);
+
+//	if (isnan(EffMat[0]))
+//	{
+//		cerr << ny << " " << pos[0] << " " << pos[1] << " " << pos[2] << " : " << EffMat[0] << endl;
+//	}
 
 	if (delta)
 	{
@@ -1274,15 +1267,15 @@ bool Operator::GetCellCenterMaterialAvgCoord(const int pos[], double coord[3]) c
 	return true;
 }
 
-double Operator::GetMaterial(
-	int ny,
-	const double* coords,
-	int MatType,
-	std::vector<CSPrimitives*> vPrims,
-	bool markAsUsed
-) const
+double Operator::GetMaterial(int ny, const double* coords, int MatType, vector<CSPrimitives*> vPrims, bool markAsUsed) const
 {
 	CSProperties* prop = CSX->GetPropertyByCoordPriority(coords,vPrims,markAsUsed);
+//	CSProperties* old_prop = CSX->GetPropertyByCoordPriority(coords,CSProperties::MATERIAL,markAsUsed);
+//	if (old_prop!=prop)
+//	{
+//		cerr << "ERROR: Unequal properties!" << endl;
+//		exit(-1);
+//	}
 
 	CSPropMaterial* mat = dynamic_cast<CSPropMaterial*>(prop);
 	if (mat)
@@ -1323,12 +1316,7 @@ double Operator::GetMaterial(
 	}
 }
 
-bool Operator::AverageMatCellCenter(
-	int ny,
-	const unsigned int* pos,
-	double* EffMat,
-	std::vector<CSPrimitives *> vPrims
-) const
+bool Operator::AverageMatCellCenter(int ny, const unsigned int* pos, double* EffMat, vector<CSPrimitives *> vPrims) const
 {
 	int n=ny;
 	double coord[3];
@@ -1384,7 +1372,7 @@ bool Operator::AverageMatCellCenter(
 		area+=A_n;
 	}
 
-	EffMat[0]*=EPS0/area;
+	EffMat[0]*=__EPS0__/area;
 	EffMat[1]/=area;
 
 	//******************************* mu,sigma averaging *****************************//
@@ -1421,25 +1409,20 @@ bool Operator::AverageMatCellCenter(
 		length+=delta_ny;
 	}
 
-	EffMat[2] = length * MUE0 / EffMat[2];
+	EffMat[2] = length * __MUE0__ / EffMat[2];
 	if (EffMat[3]) EffMat[3]=length / EffMat[3];
 
 	for (int n=0; n<4; ++n)
 		if (std::isnan(EffMat[n]) || std::isinf(EffMat[n]))
 		{
-			cerr << "Operator::" << __func__ << ": Error, an effective material parameter is not a valid result, this should NOT have happened..." << endl;
+			cerr << "Operator::" << __func__ << ": Error, an effective material parameter is not a valid result, this should NOT have happened... exit..." << endl;
 			cerr << ny << "@" << n << " : " << pos[0] << "," << pos[1] << ","  << pos[2] << endl;
-			throw std::runtime_error("Operator: effective material parameter is NaN/Inf");
+			exit(0);
 		}
 	return true;
 }
 
-bool Operator::AverageMatQuarterCell(
-	int ny,
-	const unsigned int* pos,
-	double* EffMat,
-	std::vector<CSPrimitives*> vPrims
-) const
+bool Operator::AverageMatQuarterCell(int ny, const unsigned int* pos, double* EffMat, vector<CSPrimitives*> vPrims) const
 {
 	int n=ny;
 	double coord[3];
@@ -1502,7 +1485,7 @@ bool Operator::AverageMatQuarterCell(
 	EffMat[1] += GetMaterial(n, shiftCoord, 1, vPrims)*A_n;
 	area+=A_n;
 
-	EffMat[0]*=EPS0/area;
+	EffMat[0]*=__EPS0__/area;
 	EffMat[1]/=area;
 
 	//******************************* mu,sigma averaging *****************************//
@@ -1539,26 +1522,21 @@ bool Operator::AverageMatQuarterCell(
 		EffMat[3] = 0;
 	length+=delta_ny;
 
-	EffMat[2] = length * MUE0 / EffMat[2];
+	EffMat[2] = length * __MUE0__ / EffMat[2];
 	if (EffMat[3]) EffMat[3]=length / EffMat[3];
 
 	for (int n=0; n<4; ++n)
 		if (std::isnan(EffMat[n]) || std::isinf(EffMat[n]))
 		{
-			cerr << "Operator::" << __func__ << ": Error, An effective material parameter is not a valid result, this should NOT have happened..." << endl;
+			cerr << "Operator::" << __func__ << ": Error, An effective material parameter is not a valid result, this should NOT have happened... exit..." << endl;
 			cerr << ny << "@" << n << " : " << pos[0] << "," << pos[1] << ","  << pos[2] << endl;
-			throw std::runtime_error("Operator: effective material parameter is NaN/Inf");
+			exit(0);
 		}
 
 	return true;
 }
 
-bool Operator::Calc_EffMatPos(
-	int ny,
-	const unsigned int* pos,
-	double* EffMat,
-	std::vector<CSPrimitives *> vPrims
-) const
+bool Operator::Calc_EffMatPos(int ny, const unsigned int* pos, double* EffMat, vector<CSPrimitives *> vPrims) const
 {
 	switch (m_MatAverageMethod)
 	{
@@ -1567,13 +1545,15 @@ bool Operator::Calc_EffMatPos(
 	case CentralCell:
 		return AverageMatCellCenter(ny, pos, EffMat, vPrims);
 	default:
-		throw std::runtime_error(std::string("Operator::") + __func__ + ": Error, unknown material averaging method");
+		cerr << "Operator:: " << __func__ << ":  Error, unknown material averaging method... exit" << endl;
+		exit(1);
 	}
+	return false;
 }
 
 bool Operator::Calc_LumpedElements()
 {
-	std::vector<CSProperties*> props = CSX->GetPropertyByType(CSProperties::LUMPED_ELEMENT);
+	vector<CSProperties*> props = CSX->GetPropertyByType(CSProperties::LUMPED_ELEMENT);
 
 	for (size_t i=0;i<props.size();++i)
 	{
@@ -1583,7 +1563,7 @@ bool Operator::Calc_LumpedElements()
 		if (PLE==NULL)
 			return false; //sanity check: this should never happen!
 
-		std::vector<CSPrimitives*> prims = PLE->GetAllPrimitives();
+		vector<CSPrimitives*> prims = PLE->GetAllPrimitives();
 		for (size_t bn=0;bn<prims.size();++bn)
 		{
 			CSPrimBox* box = dynamic_cast<CSPrimBox*>(prims.at(bn));
@@ -1669,7 +1649,7 @@ bool Operator::Calc_LumpedElements()
 				{
 					epsilon =  C / unitGC;
 
-					if (epsilon< EPS0)
+					if (epsilon< __EPS0__)
 					{
 						cerr << "Operator::Calc_LumpedElements(): Warning: Lumped Element capacity is too small for its size! skipping. "
 								<< " ID: " << prims.at(bn)->GetID() << " @ Property: " << PLE->GetName() << endl;
@@ -1792,17 +1772,13 @@ bool Operator::Calc_EC()
 		cerr << "CartOperator::Calc_EC: CSX not given or invalid!!!" << endl;
 		return false;
 	}
-
+	
 	MainOp->SetPos(0,0,0);
 	Calc_EC_Range(0,numLines[0]-1);
 	return true;
 }
 
-std::vector<CSPrimitives*>
-Operator::GetPrimitivesBoundBox(
-	int posX, int posY, int posZ,
-	CSProperties::PropertyType type
-) const
+vector<CSPrimitives*> Operator::GetPrimitivesBoundBox(int posX, int posY, int posZ, CSProperties::PropertyType type) const
 {
 	double boundBox[6];
 	int BBpos[3] = {posX, posY, posZ};
@@ -1815,18 +1791,18 @@ Operator::GetPrimitivesBoundBox(
 		}
 		else
 		{
-			boundBox[2*n]   = this->GetDiscLine(n, std::max(0, BBpos[n]-1));
-			boundBox[2*n+1] = this->GetDiscLine(n, std::min(int(numLines[n])-1, BBpos[n]+1));
+			boundBox[2*n]   = this->GetDiscLine(n, max(0, BBpos[n]-1));
+			boundBox[2*n+1] = this->GetDiscLine(n, min(int(numLines[n])-1, BBpos[n]+1));
 		}
 	}
 
-	std::vector<CSPrimitives*> vPrim = this->CSX->GetPrimitivesByBoundBox(boundBox, true, type);
+	vector<CSPrimitives*> vPrim = this->CSX->GetPrimitivesByBoundBox(boundBox, true, type);
 	return vPrim;
 }
 
 void Operator::Calc_EC_Range(unsigned int xStart, unsigned int xStop)
 {
-//	std::vector<CSPrimitives*> vPrims = this->CSX->GetAllPrimitives(true, CSProperties::MATERIAL);
+//	vector<CSPrimitives*> vPrims = this->CSX->GetAllPrimitives(true, CSProperties::MATERIAL);
 	unsigned int ipos;
 	unsigned int pos[3];
 	double inEC[4];
@@ -1834,11 +1810,7 @@ void Operator::Calc_EC_Range(unsigned int xStart, unsigned int xStop)
 	{
 		for (pos[1]=0; pos[1]<numLines[1]; ++pos[1])
 		{
-			std::vector<CSPrimitives*> vPrims = this->GetPrimitivesBoundBox(
-				pos[0], pos[1], -1,
-				CSProperties::MATERIAL
-			);
-
+			vector<CSPrimitives*> vPrims = this->GetPrimitivesBoundBox(pos[0], pos[1], -1, CSProperties::MATERIAL);
 			for (pos[2]=0; pos[2]<numLines[2]; ++pos[2])
 			{
 				ipos = MainOp->GetPos(pos[0],pos[1],pos[2]);
@@ -1879,7 +1851,8 @@ double Operator::CalcTimestep()
 ////Berechnung nach Andreas Rennings Dissertation 2008, Seite 66, Formel 4.52
 double Operator::CalcTimestep_Var1()
 {
-	m_Used_TS_Name = std::string("Rennings_1");
+	m_Used_TS_Name = string("Rennings_1");
+//	cout << "Operator::CalcTimestep(): Using timestep algorithm by Andreas Rennings, Dissertation @ University Duisburg-Essen, 2008, pp. 66, eq. 4.52" << endl;
 	dT=1e200;
 	double newT;
 	unsigned int pos[3];
@@ -1918,7 +1891,8 @@ double Operator::CalcTimestep_Var1()
 	}
 	if (dT==0)
 	{
-		throw std::runtime_error("Operator::CalcTimestep: Timestep is zero... this is not supposed to happen!");
+		cerr << "Operator::CalcTimestep: Timestep is zero... this is not supposed to happen!!! exit!" << endl;
+		exit(3);
 	}
 	if (g_settings.GetVerboseLevel()>1)
 	{
@@ -1942,7 +1916,8 @@ double min(double* val, unsigned int count)
 double Operator::CalcTimestep_Var3()
 {
 	dT=1e200;
-	m_Used_TS_Name = std::string("Rennings_2");
+	m_Used_TS_Name = string("Rennings_2");
+//	cout << "Operator::CalcTimestep(): Using timestep algorithm by Andreas Rennings, Dissertation @ University Duisburg-Essen, 2008, pp. 76, eq. 4.77 ff." << endl;
 	double newT;
 	unsigned int pos[3];
 	unsigned int smallest_pos[3] = {0, 0, 0};
@@ -2004,7 +1979,8 @@ double Operator::CalcTimestep_Var3()
 	}
 	if (dT==0)
 	{
-		throw std::runtime_error("Operator::CalcTimestep: Timestep is zero... this is not supposed to happen!");
+		cerr << "Operator::CalcTimestep: Timestep is zero... this is not supposed to happen!!! exit!" << endl;
+		exit(3);
 	}
 	if (g_settings.GetVerboseLevel()>1)
 	{
@@ -2034,17 +2010,19 @@ void Operator::CalcPEC_Range(unsigned int startX, unsigned int stopX, unsigned i
 	{
 		for (pos[1]=0; pos[1]<numLines[1]; ++pos[1])
 		{
-			std::vector<CSPrimitives*> vPrims = this->GetPrimitivesBoundBox(
-				pos[0], pos[1], -1,
-				(CSProperties::PropertyType)(CSProperties::MATERIAL | CSProperties::METAL)
-			);
-
+			vector<CSPrimitives*> vPrims = this->GetPrimitivesBoundBox(pos[0], pos[1], -1, (CSProperties::PropertyType)(CSProperties::MATERIAL | CSProperties::METAL));
 			for (pos[2]=0; pos[2]<numLines[2]; ++pos[2])
 			{
 				for (int n=0; n<3; ++n)
 				{
 					GetYeeCoords(n,pos,coord,false);
 					CSProperties* prop = CSX->GetPropertyByCoordPriority(coord, vPrims, true);
+//					CSProperties* old_prop = CSX->GetPropertyByCoordPriority(coord, (CSProperties::PropertyType)(CSProperties::MATERIAL | CSProperties::METAL), true);
+//					if (old_prop!=prop)
+//					{
+//						cerr << "CalcPEC_Range: " << old_prop << " vs " << prop << endl;
+//						exit(-1);
+//					}
 					if (prop)
 					{
 						if (prop->GetType()==CSProperties::METAL) //set to PEC
@@ -2066,7 +2044,7 @@ void Operator::CalcPEC_Curves()
 	double p1[3];
 	double p2[3];
 	Grid_Path path;
-	std::vector<CSProperties*> vec_prop = CSX->GetPropertyByType(CSProperties::METAL);
+	vector<CSProperties*> vec_prop = CSX->GetPropertyByType(CSProperties::METAL);
 	for (size_t p=0; p<vec_prop.size(); ++p)
 	{
 		CSProperties* prop = vec_prop.at(p);
@@ -2128,7 +2106,7 @@ void Operator::DeleteExtension(Operator_Extension* op_ext)
 double Operator::CalcNumericPhaseVelocity(unsigned int start[3], unsigned int stop[3], double propDir[3], float freq) const
 {
 	double average_mesh_disc[3];
-	double c0 = C0/sqrt(GetBackgroundEpsR()*GetBackgroundMueR());
+	double c0 = __C0__/sqrt(GetBackgroundEpsR()*GetBackgroundMueR());
 
 	//calculate average mesh deltas
 	for (int n=0;n<3;++n)
@@ -2186,7 +2164,7 @@ double Operator::CalcNumericPhaseVelocity(unsigned int start[3], unsigned int st
 	}
 
 	if (g_settings.GetVerboseLevel()>1)
-		cerr << "Operator::CalcNumericPhaseVelocity: Newton iteration estimated solution: " << phv/C0 << "*c0 in " <<  it_count << " iterations." << endl;
+		cerr << "Operator::CalcNumericPhaseVelocity: Newton iteration estimated solution: " << phv/__C0__ << "*c0 in " <<  it_count << " iterations." << endl;
 
 	return phv;
 }

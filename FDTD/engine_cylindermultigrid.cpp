@@ -19,9 +19,6 @@
 #include "operator_cylindermultigrid.h"
 #include "extensions/engine_ext_cylindermultigrid.h"
 
-using std::cout;
-using std::endl;
-
 Engine_CylinderMultiGrid* Engine_CylinderMultiGrid::New(const Operator_CylinderMultiGrid* op, unsigned int numThreads)
 {
 	cout << "Create FDTD engine (cylindrical multi grid mesh using sse compression + multithreading)" << endl;
@@ -147,16 +144,16 @@ void Engine_CylinderMultiGrid::InterpolVoltChild2Base(unsigned int rPos)
 		for (pos[2]=0; pos[2]<numVectors; ++pos[2])
 		{
 			//r - direction
-			f4_volt(0, pos[0], pos[1], pos[2]).v  = Op_CMG->f4_interpol_v_2p[0][pos[1]].v * innerEngine_f4_volt(0, pos[0], Op_CMG->m_interpol_pos_v_2p[0][pos[1]], pos[2]).v
-													+ Op_CMG->f4_interpol_v_2pp[0][pos[1]].v * innerEngine_f4_volt(0, pos[0], Op_CMG->m_interpol_pos_v_2pp[0][pos[1]], pos[2]).v;
+			f4_volt[0][pos[0]][pos[1]][pos[2]].v  = Op_CMG->f4_interpol_v_2p[0][pos[1]].v * innerEngine_f4_volt[0][pos[0]][Op_CMG->m_interpol_pos_v_2p[0][pos[1]]][pos[2]].v
+													+ Op_CMG->f4_interpol_v_2pp[0][pos[1]].v * innerEngine_f4_volt[0][pos[0]][Op_CMG->m_interpol_pos_v_2pp[0][pos[1]]][pos[2]].v;
 
 			//z - direction
-			f4_volt(2, pos[0], pos[1], pos[2]).v  = Op_CMG->f4_interpol_v_2p[0][pos[1]].v * innerEngine_f4_volt(2, pos[0], Op_CMG->m_interpol_pos_v_2p[0][pos[1]], pos[2]).v
-													+ Op_CMG->f4_interpol_v_2pp[0][pos[1]].v * innerEngine_f4_volt(2, pos[0], Op_CMG->m_interpol_pos_v_2pp[0][pos[1]], pos[2]).v;
+			f4_volt[2][pos[0]][pos[1]][pos[2]].v  = Op_CMG->f4_interpol_v_2p[0][pos[1]].v * innerEngine_f4_volt[2][pos[0]][Op_CMG->m_interpol_pos_v_2p[0][pos[1]]][pos[2]].v
+													+ Op_CMG->f4_interpol_v_2pp[0][pos[1]].v * innerEngine_f4_volt[2][pos[0]][Op_CMG->m_interpol_pos_v_2pp[0][pos[1]]][pos[2]].v;
 
 			//alpha - direction
-			f4_volt(1, pos[0], pos[1], pos[2]).v  = Op_CMG->f4_interpol_v_2p[1][pos[1]].v * innerEngine_f4_volt(1, pos[0], Op_CMG->m_interpol_pos_v_2p[1][pos[1]], pos[2]).v
-													+ Op_CMG->f4_interpol_v_2pp[1][pos[1]].v * innerEngine_f4_volt(1, pos[0], Op_CMG->m_interpol_pos_v_2pp[1][pos[1]], pos[2]).v;
+			f4_volt[1][pos[0]][pos[1]][pos[2]].v  = Op_CMG->f4_interpol_v_2p[1][pos[1]].v * innerEngine_f4_volt[1][pos[0]][Op_CMG->m_interpol_pos_v_2p[1][pos[1]]][pos[2]].v
+													+ Op_CMG->f4_interpol_v_2pp[1][pos[1]].v * innerEngine_f4_volt[1][pos[0]][Op_CMG->m_interpol_pos_v_2pp[1][pos[1]]][pos[2]].v;
 		}
 	}
 }
@@ -174,16 +171,16 @@ void Engine_CylinderMultiGrid::InterpolCurrChild2Base(unsigned int rPos)
 		for (pos[2]=0; pos[2]<numVectors; ++pos[2])
 		{
 			//r - direction
-			f4_curr(0, pos[0], pos[1], pos[2]).v  = Op_CMG->f4_interpol_i_2p[0][pos[1]].v * innerEngine_f4_curr(0, pos[0], Op_CMG->m_interpol_pos_i_2p[0][pos[1]], pos[2]).v
-													+ Op_CMG->f4_interpol_i_2pp[0][pos[1]].v * innerEngine_f4_curr(0, pos[0], Op_CMG->m_interpol_pos_i_2pp[0][pos[1]], pos[2]).v;
+			f4_curr[0][pos[0]][pos[1]][pos[2]].v  = Op_CMG->f4_interpol_i_2p[0][pos[1]].v * innerEngine_f4_curr[0][pos[0]][Op_CMG->m_interpol_pos_i_2p[0][pos[1]]][pos[2]].v
+													+ Op_CMG->f4_interpol_i_2pp[0][pos[1]].v * innerEngine_f4_curr[0][pos[0]][Op_CMG->m_interpol_pos_i_2pp[0][pos[1]]][pos[2]].v;
 
 			//z - direction
-			f4_curr(2, pos[0], pos[1], pos[2]).v  = Op_CMG->f4_interpol_i_2p[0][pos[1]].v * innerEngine_f4_curr(2, pos[0], Op_CMG->m_interpol_pos_i_2p[0][pos[1]], pos[2]).v
-													+ Op_CMG->f4_interpol_i_2pp[0][pos[1]].v * innerEngine_f4_curr(2, pos[0], Op_CMG->m_interpol_pos_i_2pp[0][pos[1]], pos[2]).v;
+			f4_curr[2][pos[0]][pos[1]][pos[2]].v  = Op_CMG->f4_interpol_i_2p[0][pos[1]].v * innerEngine_f4_curr[2][pos[0]][Op_CMG->m_interpol_pos_i_2p[0][pos[1]]][pos[2]].v
+													+ Op_CMG->f4_interpol_i_2pp[0][pos[1]].v * innerEngine_f4_curr[2][pos[0]][Op_CMG->m_interpol_pos_i_2pp[0][pos[1]]][pos[2]].v;
 
 			//alpha - direction
-			f4_curr(1, pos[0], pos[1], pos[2]).v  = Op_CMG->f4_interpol_i_2p[1][pos[1]].v * innerEngine_f4_curr(1, pos[0], Op_CMG->m_interpol_pos_i_2p[1][pos[1]], pos[2]).v
-													+ Op_CMG->f4_interpol_i_2pp[1][pos[1]].v * innerEngine_f4_curr(1, pos[0], Op_CMG->m_interpol_pos_i_2pp[1][pos[1]], pos[2]).v;
+			f4_curr[1][pos[0]][pos[1]][pos[2]].v  = Op_CMG->f4_interpol_i_2p[1][pos[1]].v * innerEngine_f4_curr[1][pos[0]][Op_CMG->m_interpol_pos_i_2p[1][pos[1]]][pos[2]].v
+													+ Op_CMG->f4_interpol_i_2pp[1][pos[1]].v * innerEngine_f4_curr[1][pos[0]][Op_CMG->m_interpol_pos_i_2pp[1][pos[1]]][pos[2]].v;
 		}
 	}
 }

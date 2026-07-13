@@ -18,12 +18,12 @@
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
-using FDTD_FLOAT = float;
+#define FDTD_FLOAT float
 
-constexpr double EPS0 = 8.85418781762e-12;
-constexpr double MUE0 = 1.256637062e-6;
-constexpr double C0   = 299792458;
-constexpr double Z0   = 376.730313461;
-constexpr double PI   = 3.141592653589793238462643383279;
+#define __EPS0__ 8.85418781762e-12
+#define __MUE0__ 1.256637062e-6
+#define __C0__ 299792458
+#define __Z0__ 376.730313461
+#define PI 3.141592653589793238462643383279
 
 #endif // CONSTANTS_H

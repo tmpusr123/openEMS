@@ -55,16 +55,17 @@ template <
 >
 class ArrayLib::ArrayBase
 {
+private:
+	using ArrayBaseType = ArrayBase<
+		Derived, T, rank, Index, Allocator
+	>;
+
 protected:
-	using IndexType = Index;
 	using AllocatorType = Allocator;
 
-	std::string m_name="";
-	bool m_swapped=false; // record if swapped axis
-	std::array<IndexType, rank> m_extent = {};
-	std::array<IndexType, rank> m_stride = {};
-	IndexType m_size=0;
-	size_t m_bytes=0;
+	std::string m_name;
+	std::array<Index, rank> m_extent;
+	Index m_size, m_bytes;
 
 	T* __restrict m_ptr = NULL;
 
@@ -72,6 +73,9 @@ protected:
 	ArrayBase() {}
 
 public:
+	using IndexType = Index;
+	using ValueType = T;
+
 	// Access array via arr({i, j, k}) syntax with one array of indices.
 	// Each derived class should also implement operator(i, j, k), which
 	// is the recommended syntax.
@@ -82,20 +86,18 @@ public:
 		return m_ptr[derived->linearIndex(tupleIndex)];
 	}
 
-	void Reset()
+	// Access array via arr[i][j][k] syntax with one index per operator[]
+	// implemented by a Subscript class, which uses template metaprogramming
+	// to either recursively return another Subscript, or return an actual
+	// reference T&. Performance of nested operator[] should be the same as
+	// as flat operator() (identical assembly code generation even on MSVC).
+	//
+	// Not recommended in new code anyway, only for legacy code compatibility.
+	Subscript<const ArrayBaseType, rank, 1>
+	operator[] (IndexType firstTupleIdx) const
 	{
-		if (this->m_ptr==NULL) return;
-		AllocatorType::free(this->m_ptr, this->m_size);
-		this->m_name    = "";
-		this->m_ptr     = NULL;
-		this->m_size    = 0;
-		this->m_bytes   = 0;
-		this->m_swapped = false;
-		for (size_t n=0;n<rank;++n)
-		{
-			this->m_extent[n] = 0;
-			this->m_stride[n] = 0;
-		}
+		auto subscriptAccessor = Subscript<const ArrayBaseType, rank, 0>(*this);
+		return subscriptAccessor[firstTupleIdx];
 	}
 
 	// This array must always be passed via reference, not value, because
@@ -105,32 +107,16 @@ public:
 	// the entire program.
 	ArrayBase (const ArrayBase&) = delete;
 	ArrayBase& operator= (const ArrayBase&) = delete;
-	virtual ~ArrayBase() {Reset();}
 
 	std::string                 name()              const { return m_name;     }
 	std::array<IndexType, rank> extent()            const { return m_extent;   }
 	IndexType                   extent(IndexType n) const { return m_extent[n];}
-	IndexType                   stride(IndexType n) const { return m_stride[n];}
-	bool                        valid()             const { return m_ptr!=NULL;}
-
-	// allow to swap axis
-	void swapAxis(size_t a, size_t b)
-	{
-		if ((a>=rank) || (b>=rank) || (a==b))
-			return;
-		m_swapped = true;
-		std::swap(m_extent[a], m_extent[b]);
-		std::swap(m_stride[a], m_stride[b]);
-	}
-
-	// return if any axis are swapped (important for linear data access)
-	bool wasSwapped() const {return m_swapped;}
 
 	// return the number of array elements
 	IndexType                   size()              const { return m_size;     }
 
 	// return occupied memory
-	size_t                      bytes()             const { return m_bytes;    }
+	IndexType                   bytes()             const { return m_bytes;    }
 
 	// return raw pointer to underlying data
 	T*                          data()              const { return m_ptr;      }

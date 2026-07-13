@@ -40,11 +40,6 @@ public:
 	//! Set dumps to use native fields.
 	void SetNativeFieldDumps(bool val) {m_nativeFieldDumps=val;}
 
-	//! Set true if hdf5 dump should use an older legacy format (used e.g. for Matlab/Octave import)
-	void SetLegacyHDF5Dumps(bool val) {m_legacyHDF5=val;}
-	//! Returns true if hdf5 dump should use an older legacy format (used e.g. for Matlab/Octave import)
-	bool GetLegacyHDF5Dumps() const {return m_legacyHDF5;}
-
 	//! Set the verbose level
 	void SetVerboseLevel(int level) {m_VerboseLevel=level;m_SavedVerboseLevel=level;}
 	//! Get the verbose level
@@ -92,21 +87,9 @@ public:
 	// calling appendOptionDesc.
 	void appendOptionDesc(boost::program_options::options_description desc);
 
-	// If multiple openEMS() instances are created within the application, two
-	// problem occurs. First, identical optionDesc are registered to Global()
-	// more than once creating command-line option conflict everywhere. This
-	// problem can't be prevented by registering only once - re-registering is
-	// needed because callback functions are specific to a particular openEMS()
-	// instance, so all argument changes would only be applied to the first one.
-	// Thus, we always call clearOptionDesc() just before we start parsing
-	// arguments in collectCommandLineArguments(), so that the callback handlers
-	// are always installed to the current openEMS() instance.
-	//
-	// FIXME: This is only a workaround. Global() options are still fundamentally
-	// thread-unsafe (in rare cases, one openEMS instance may change the global
-	// options within one thread, while the other openEMS instance is still trying
-	// to read their values). In the future, rewrite Global() to make it a
-	// per-openEMS instance or per-thread entity.
+	// Reset the collected option descriptions. Lets a caller re-register a fresh
+	// set before parsing so repeated openEMS instances in one process do not
+	// accumulate duplicate options (which makes the parser report "ambiguous").
 	void clearOptionDesc();
 
 	// Parse all options provided as a std::vector of std::strings,
@@ -129,12 +112,11 @@ public:
 protected:
 	bool m_showProbeDiscretization;
 	bool m_nativeFieldDumps;
-	bool m_legacyHDF5;
 	int m_VerboseLevel;
 	int m_SavedVerboseLevel;
 
 	boost::program_options::variables_map m_options;
-	boost::program_options::options_description* m_optionDesc;
+	boost::program_options::options_description m_optionDesc;
 };
 
 OPENEMS_EXPORT extern Global g_settings;

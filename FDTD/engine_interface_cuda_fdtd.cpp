@@ -1,5 +1,5 @@
 /*
-*	Copyright (C) 2019 Thorsten Liebig (Thorsten.Liebig@gmx.de)
+*	Copyright (C) 2025 Tommy Gu (radiotommy@gmail.com)
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -15,17 +15,26 @@
 *	along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef OPENEMS_GLOBAL_H
-#define OPENEMS_GLOBAL_H
+#include "engine_interface_cuda_fdtd.h"
 
-#if defined(WIN32)
-	#ifdef BUILD_OPENEMS_LIB
-	#define OPENEMS_EXPORT __declspec(dllexport)
-	#else
-	#define OPENEMS_EXPORT __declspec(dllimport)
-	#endif
-#else
-#define OPENEMS_EXPORT
-#endif
+Engine_Interface_CUDA_FDTD::Engine_Interface_CUDA_FDTD(Operator_CUDA* op) : Engine_Interface_FDTD(op)
+{
+	m_Op_CUDA= op;
+	m_Eng_CUDA = dynamic_cast<Engine_cuda*>(m_Op_CUDA->GetEngine());
+	if (m_Eng_CUDA==NULL)
+	{
+		cerr << "Engine_Interface_SSE_FDTD::Engine_Interface_SSE_FDTD: Error: SSE-Engine is not set! Exit!" << endl;
+		exit(1);
+	}
+}
 
-#endif // OPENEMS_GLOBAL_H
+Engine_Interface_CUDA_FDTD::~Engine_Interface_CUDA_FDTD()
+{
+	m_Op_CUDA = NULL;
+	m_Eng_CUDA = NULL;
+}
+
+double Engine_Interface_CUDA_FDTD::CalcFastEnergy() const
+{
+	return m_Eng_CUDA->CalcFastEnergy();
+}

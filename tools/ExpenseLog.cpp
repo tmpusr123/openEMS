@@ -122,17 +122,17 @@ ExpenseModule* ExpenseLog::AddModule(const char* name)
 void ExpenseLog::PrintAll(FILE *file)
 {
 	double totalAdd=0,totalMul=0,totalBool=0,totalAssign=0;
-	fprintf(file,"\n ----------------\n Expense Log PrintOut\n Nr of Modules: %d\n",vModules.size());
+	fprintf(stderr,"\n ----------------\n Expense Log PrintOut\n Nr of Modules: %d\n",vModules.size());
 	for (size_t i=0; i<vModules.size(); ++i)
 	{
-		totalAdd+=((double)vModules.at(i)->uiIntAdditions+(double)vModules.at(i)->uiDoubleAdditions) + 1e9*((double)vModules.at(i)->uiMrdIA+(double)vModules.at(i)->uiMrdDA);
-		totalMul+=((double)vModules.at(i)->uiIntMultiplications+(double)vModules.at(i)->uiDoubleMultiplications) + 1e9*(double)(vModules.at(i)->uiMrdIM+vModules.at(i)->uiMrdDM);
+		totalAdd+=((double)vModules.at(i)->uiIntAdditions+(double)vModules.at(i)->uiDoubleAdditions) + 1e9*((double)vModules.at(i)->uiMrdIA+(double)vModules.at(i)->uiMrdIA);
+		totalMul+=((double)vModules.at(i)->uiIntMultiplications+(double)vModules.at(i)->uiDoubleMultiplications) + 1e9*(double)(vModules.at(i)->uiMrdIM+vModules.at(i)->uiMrdIM);
 		totalBool+=(double)vModules.at(i)->uiBoolOp + 1e9*(double)vModules.at(i)->uiMrdBO;
 		totalAssign+=(double)vModules.at(i)->uiAssignments + 1e9*(double)vModules.at(i)->uiMrdAssign;
 		vModules.at(i)->PrintfSelf(file);
 	}
-	fprintf(file," Total:\n Additions: %e Multiplications: %e\n Bool Operations: %e Assignments: %e\n",totalAdd,totalMul,totalBool,totalAssign);
-	fprintf(file,"\n ----------------\n");
+	fprintf(stderr," Total:\n Additions: %e Multiplications: %e\n Bool Operations: %e Assignments: %e\n",totalAdd,totalMul,totalBool,totalAssign);
+	fprintf(stderr,"\n ----------------\n");
 }
 
 void ExpenseLog::ClearAll()

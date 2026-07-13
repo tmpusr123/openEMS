@@ -7,9 +7,20 @@ if (WITH_MPI)
      )
 endif()
 
+if (WITH_CUDA)
+  set(CUDA_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine_cuda.cu
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine_cuda_mgpu.cu
+    ${CMAKE_CURRENT_SOURCE_DIR}/operator_cuda.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine_interface_cuda_fdtd.cpp
+  )
+  ADD_DEFINITIONS(-DWITH_CUDA)
+endif()
+
 set(SOURCES
   ${SOURCES}
   ${MPI_SOURCES}
+  ${CUDA_SOURCES}
   ${CMAKE_CURRENT_SOURCE_DIR}/engine.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/operator.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/engine_multithread.cpp

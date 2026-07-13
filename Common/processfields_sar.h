@@ -19,8 +19,6 @@
 #define PROCESSFIELDS_SAR_H
 
 #include "processfields_fd.h"
-#include "tools/arraylib/array_nijk.h"
-
 
 class ProcessFieldsSAR : public ProcessFieldsFD
 {
@@ -55,9 +53,9 @@ protected:
 	std::string m_SAR_method;
 
 	//! frequency domain electric field storage
-	std::vector<ArrayLib::ArrayNIJK<std::complex<float>>*> m_E_FD_Fields;
+	std::vector<std::complex<float>****> m_E_FD_Fields;
 	//! frequency domain current density storage
-	std::vector<ArrayLib::ArrayNIJK<std::complex<float>>*> m_J_FD_Fields;
+	std::vector<std::complex<float>****> m_J_FD_Fields;
 };
 
 #endif // PROCESSFIELDS_SAR_H

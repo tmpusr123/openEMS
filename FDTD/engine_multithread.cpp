@@ -27,14 +27,12 @@
 
 #include "engine_multithread.h"
 #include "extensions/engine_extension.h"
+#include "tools/array_ops.h"
 #include "tools/denormal.h"
 
 #include "boost/date_time/posix_time/posix_time.hpp"
 #include "boost/date_time/gregorian/gregorian.hpp"
 #include <iomanip>
-
-using std::cout;
-using std::endl;
 
 //! \brief construct an Engine_Multithread instance
 //! it's the responsibility of the caller to free the returned pointer
@@ -155,8 +153,8 @@ void Engine_Multithread::changeNumThreads(unsigned int numThreads)
 	if (g_settings.GetVerboseLevel()>0)
 		cout << "Multithreaded engine using " << m_numThreads << " threads. Utilization: (";
 
-	std::vector<unsigned int> m_Start_Lines;
-	std::vector<unsigned int> m_Stop_Lines;
+	vector<unsigned int> m_Start_Lines;
+	vector<unsigned int> m_Stop_Lines;
 	m_Op_MT->CalcStartStopLines( m_numThreads, m_Start_Lines, m_Stop_Lines );
 
 	if (m_IterateBarrier!=0)
@@ -191,6 +189,7 @@ void Engine_Multithread::changeNumThreads(unsigned int numThreads)
 		else
 			if (g_settings.GetVerboseLevel()>0)
 				cout << stop-start+1 << ";";
+//		NS_Engine_Multithread::DBG().cout() << "###DEBUG## Thread " << n << ": start=" << start << " stop=" << stop  << " stop_h=" << stop_h << std::endl;
 		boost::thread *t = new boost::thread( NS_Engine_Multithread::thread(this,start,stop,stop_h,n) );
 		m_thread_group->add_thread( t );
 	}
