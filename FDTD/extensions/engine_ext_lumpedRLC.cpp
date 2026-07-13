@@ -82,6 +82,16 @@ Engine_Ext_LumpedRLC::~Engine_Ext_LumpedRLC()
 	if (d_Vd2)   cudaFree(d_Vd2);
 	if (d_J1)    cudaFree(d_J1);
 	if (d_J2)    cudaFree(d_J2);
+	for (size_t g = 0; g < mg_cells.size(); ++g)
+	{
+		cudaSetDevice(mg_dev[g]);
+		if (mg_cells[g]) cudaFree(mg_cells[g]);
+		if (mg_Il[g])    cudaFree(mg_Il[g]);
+		if (mg_Vd1[g])   cudaFree(mg_Vd1[g]);
+		if (mg_Vd2[g])   cudaFree(mg_Vd2[g]);
+		if (mg_J1[g])    cudaFree(mg_J1[g]);
+		if (mg_J2[g])    cudaFree(mg_J2[g]);
+	}
 #endif
 
 	m_Op_Ext_RLC = NULL;

@@ -74,6 +74,21 @@ protected:
 	std::vector<char> m_cuda_iOn, m_cuda_iLorOn;             // per-order curr flags
 	std::vector<disp_cell*>  d_cells;                        // geometry+coeffs per order
 	std::vector<FDTD_FLOAT*> d_vADE, d_vLor, d_iADE, d_iLor; // ADE aux state per order (N*3)
+
+	// multi-GPU: cells partitioned by owning slab (x translated to slab-local
+	// incl. ghost offset); per-slab-per-order aux state. The ADE recurrence is
+	// cell-local, and per-order launches on each slab's stream preserve the
+	// cross-order serialization for multi-pole cells. Indexed [slab][order].
+	// Also used by ConductingSheet, which derives from the Lorentz operator.
+	void SetEngineMg(class Engine_cuda_mgpu* mg);
+	void DoPreVoltageUpdatesMg(class Engine_cuda_mgpu* mg);
+	void Apply2VoltagesMg(class Engine_cuda_mgpu* mg);
+	void DoPreCurrentUpdatesMg(class Engine_cuda_mgpu* mg);
+	void Apply2CurrentMg(class Engine_cuda_mgpu* mg);
+	std::vector<int> mg_dev;                                  // per slab
+	std::vector<std::vector<int> >         mg_N;
+	std::vector<std::vector<disp_cell*> >  mg_cells;
+	std::vector<std::vector<FDTD_FLOAT*> > mg_vADE, mg_vLor, mg_iADE, mg_iLor;
 #endif
 
 	//! ADE Lorentz voltages

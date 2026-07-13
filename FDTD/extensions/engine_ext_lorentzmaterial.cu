@@ -16,6 +16,7 @@
 #include "engine_ext_lorentzmaterial.h"
 #include "operator_ext_lorentzmaterial.h"
 #include "FDTD/engine_cuda.h"
+#include "FDTD/engine_cuda_mgpu.h"
 
 #include <cuda_runtime.h>
 #include "hemi/grid_stride_range.h"
@@ -88,11 +89,165 @@ void dispApplyKernel(FDTD_FLOAT* field, dim3 dim, const disp_cell* c,
 	}
 }
 
+// ---- multi-GPU: cells partitioned per slab, aux state per slab+order ----
+void Engine_Ext_LorentzMaterial::SetEngineMg(Engine_cuda_mgpu* mg)
+{
+	Operator_Ext_LorentzMaterial* op = m_Op_Ext_Lor;
+	m_cuda_order = m_Order;
+	int nslab = mg->NumSlabs();
+
+	m_cuda_N.assign(m_Order, 0);           // unused in mgpu mode, kept sane
+	m_cuda_vOn.assign(m_Order, 0);
+	m_cuda_vLorOn.assign(m_Order, 0);
+	m_cuda_iOn.assign(m_Order, 0);
+	m_cuda_iLorOn.assign(m_Order, 0);
+	for (int o = 0; o < m_Order; ++o)
+	{
+		m_cuda_vOn[o]    = op->m_volt_ADE_On[o];
+		m_cuda_iOn[o]    = op->m_curr_ADE_On[o];
+		m_cuda_vLorOn[o] = op->m_volt_Lor_ADE_On[o];
+		m_cuda_iLorOn[o] = op->m_curr_Lor_ADE_On[o];
+	}
+
+	mg_dev.assign(nslab, 0);
+	mg_N.assign(nslab, std::vector<int>(m_Order, 0));
+	mg_cells.assign(nslab, std::vector<disp_cell*>(m_Order, (disp_cell*)NULL));
+	mg_vADE.assign(nslab, std::vector<FDTD_FLOAT*>(m_Order, (FDTD_FLOAT*)NULL));
+	mg_vLor.assign(nslab, std::vector<FDTD_FLOAT*>(m_Order, (FDTD_FLOAT*)NULL));
+	mg_iADE.assign(nslab, std::vector<FDTD_FLOAT*>(m_Order, (FDTD_FLOAT*)NULL));
+	mg_iLor.assign(nslab, std::vector<FDTD_FLOAT*>(m_Order, (FDTD_FLOAT*)NULL));
+
+	for (int g = 0; g < nslab; ++g)
+	{
+		const CudaSlabCtx &c = mg->Slab(g);
+		mg_dev[g] = c.device;
+		checkCuda(cudaSetDevice(c.device));
+
+		for (int o = 0; o < m_Order; ++o)
+		{
+			int N = (int)op->m_LM_Count[o];
+			if (N == 0) continue;
+			bool vOn  = op->m_volt_ADE_On[o];
+			bool iOn  = op->m_curr_ADE_On[o];
+			bool vLor = op->m_volt_Lor_ADE_On[o];
+			bool iLor = op->m_curr_Lor_ADE_On[o];
+			unsigned int** pos = op->m_LM_pos[o];
+
+			std::vector<disp_cell> cells;
+			for (int i = 0; i < N; ++i)
+			{
+				int x = (int)pos[0][i];
+				if (x < c.x_start || x >= c.x_end) continue;
+				disp_cell h;
+				h.x = x - c.x_start + 1;   // slab-local incl. ghost offset
+				h.y = (int)pos[1][i];
+				h.z = (int)pos[2][i];
+				for (int n = 0; n < 3; ++n)
+				{
+					h.v_int[n] = vOn  ? op->v_int_ADE[o][n][i] : 0;
+					h.v_ext[n] = vOn  ? op->v_ext_ADE[o][n][i] : 0;
+					h.v_lor[n] = vLor ? op->v_Lor_ADE[o][n][i] : 0;
+					h.i_int[n] = iOn  ? op->i_int_ADE[o][n][i] : 0;
+					h.i_ext[n] = iOn  ? op->i_ext_ADE[o][n][i] : 0;
+					h.i_lor[n] = iLor ? op->i_Lor_ADE[o][n][i] : 0;
+				}
+				cells.push_back(h);
+			}
+			mg_N[g][o] = (int)cells.size();
+			if (cells.empty()) continue;
+
+			checkCuda(cudaMalloc(&mg_cells[g][o], cells.size() * sizeof(disp_cell)));
+			checkCuda(cudaMemcpy(mg_cells[g][o], cells.data(), cells.size() * sizeof(disp_cell), cudaMemcpyHostToDevice));
+
+			size_t bytes = cells.size() * 3 * sizeof(FDTD_FLOAT);
+			if (vOn)  { checkCuda(cudaMalloc(&mg_vADE[g][o], bytes)); checkCuda(cudaMemset(mg_vADE[g][o], 0, bytes)); }
+			if (vLor) { checkCuda(cudaMalloc(&mg_vLor[g][o], bytes)); checkCuda(cudaMemset(mg_vLor[g][o], 0, bytes)); }
+			if (iOn)  { checkCuda(cudaMalloc(&mg_iADE[g][o], bytes)); checkCuda(cudaMemset(mg_iADE[g][o], 0, bytes)); }
+			if (iLor) { checkCuda(cudaMalloc(&mg_iLor[g][o], bytes)); checkCuda(cudaMemset(mg_iLor[g][o], 0, bytes)); }
+		}
+	}
+}
+
+void Engine_Ext_LorentzMaterial::DoPreVoltageUpdatesMg(Engine_cuda_mgpu* mg)
+{
+	for (int g = 0; g < mg->NumSlabs(); ++g)
+	{
+		const CudaSlabCtx &c = mg->Slab(g);
+		cudaSetDevice(c.device);
+		for (int o = 0; o < m_cuda_order; ++o)   // sequential per stream: order-safe
+		{
+			if (!m_cuda_vOn[o] || mg_N[g][o] == 0) continue;
+			int N = mg_N[g][o];
+			int blocks = (N + DISP_THREADS - 1) / DISP_THREADS;
+			lorPreVoltKernel<<<blocks, DISP_THREADS, 0, c.stream>>>(
+				c.d_volt, c.local_dim, mg_cells[g][o], mg_vADE[g][o], mg_vLor[g][o],
+				N, (int)m_cuda_vLorOn[o]);
+		}
+	}
+}
+
+void Engine_Ext_LorentzMaterial::Apply2VoltagesMg(Engine_cuda_mgpu* mg)
+{
+	for (int g = 0; g < mg->NumSlabs(); ++g)
+	{
+		const CudaSlabCtx &c = mg->Slab(g);
+		cudaSetDevice(c.device);
+		for (int o = 0; o < m_cuda_order; ++o)
+		{
+			if (!m_cuda_vOn[o] || mg_N[g][o] == 0) continue;
+			int N = mg_N[g][o];
+			int blocks = (N + DISP_THREADS - 1) / DISP_THREADS;
+			dispApplyKernel<<<blocks, DISP_THREADS, 0, c.stream>>>(
+				c.d_volt, c.local_dim, mg_cells[g][o], mg_vADE[g][o], N);
+		}
+	}
+}
+
+void Engine_Ext_LorentzMaterial::DoPreCurrentUpdatesMg(Engine_cuda_mgpu* mg)
+{
+	for (int g = 0; g < mg->NumSlabs(); ++g)
+	{
+		const CudaSlabCtx &c = mg->Slab(g);
+		cudaSetDevice(c.device);
+		for (int o = 0; o < m_cuda_order; ++o)
+		{
+			if (!m_cuda_iOn[o] || mg_N[g][o] == 0) continue;
+			int N = mg_N[g][o];
+			int blocks = (N + DISP_THREADS - 1) / DISP_THREADS;
+			lorPreCurrKernel<<<blocks, DISP_THREADS, 0, c.stream>>>(
+				c.d_curr, c.local_dim, mg_cells[g][o], mg_iADE[g][o], mg_iLor[g][o],
+				N, (int)m_cuda_iLorOn[o]);
+		}
+	}
+}
+
+void Engine_Ext_LorentzMaterial::Apply2CurrentMg(Engine_cuda_mgpu* mg)
+{
+	for (int g = 0; g < mg->NumSlabs(); ++g)
+	{
+		const CudaSlabCtx &c = mg->Slab(g);
+		cudaSetDevice(c.device);
+		for (int o = 0; o < m_cuda_order; ++o)
+		{
+			if (!m_cuda_iOn[o] || mg_N[g][o] == 0) continue;
+			int N = mg_N[g][o];
+			int blocks = (N + DISP_THREADS - 1) / DISP_THREADS;
+			dispApplyKernel<<<blocks, DISP_THREADS, 0, c.stream>>>(
+				c.d_curr, c.local_dim, mg_cells[g][o], mg_iADE[g][o], N);
+		}
+	}
+}
+
 void Engine_Ext_LorentzMaterial::SetEngine(Engine* eng)
 {
 	m_Eng = eng;
 	if (eng->GetType() != Engine::CUDA)
 		return;
+
+	if (Engine_cuda_mgpu* mg = dynamic_cast<Engine_cuda_mgpu*>(eng)) {
+		SetEngineMg(mg);
+		return;
+	}
 
 	Operator_Ext_LorentzMaterial* op = m_Op_Ext_Lor;
 	m_cuda_order = m_Order;
@@ -158,6 +313,10 @@ void Engine_Ext_LorentzMaterial::SetEngine(Engine* eng)
 
 void Engine_Ext_LorentzMaterial::DoPreVoltageUpdatesCuda(Engine_cuda* eng)
 {
+	if (Engine_cuda_mgpu* mg = dynamic_cast<Engine_cuda_mgpu*>(eng)) {
+		DoPreVoltageUpdatesMg(mg);
+		return;
+	}
 	for (int o = 0; o < m_cuda_order; ++o)
 	{
 		if (!m_cuda_vOn[o] || m_cuda_N[o] == 0) continue;
@@ -171,6 +330,10 @@ void Engine_Ext_LorentzMaterial::DoPreVoltageUpdatesCuda(Engine_cuda* eng)
 
 void Engine_Ext_LorentzMaterial::Apply2VoltagesCuda(Engine_cuda* eng)
 {
+	if (Engine_cuda_mgpu* mg = dynamic_cast<Engine_cuda_mgpu*>(eng)) {
+		Apply2VoltagesMg(mg);
+		return;
+	}
 	for (int o = 0; o < m_cuda_order; ++o)
 	{
 		if (!m_cuda_vOn[o] || m_cuda_N[o] == 0) continue;
@@ -184,6 +347,10 @@ void Engine_Ext_LorentzMaterial::Apply2VoltagesCuda(Engine_cuda* eng)
 
 void Engine_Ext_LorentzMaterial::DoPreCurrentUpdatesCuda(Engine_cuda* eng)
 {
+	if (Engine_cuda_mgpu* mg = dynamic_cast<Engine_cuda_mgpu*>(eng)) {
+		DoPreCurrentUpdatesMg(mg);
+		return;
+	}
 	for (int o = 0; o < m_cuda_order; ++o)
 	{
 		if (!m_cuda_iOn[o] || m_cuda_N[o] == 0) continue;
@@ -197,6 +364,10 @@ void Engine_Ext_LorentzMaterial::DoPreCurrentUpdatesCuda(Engine_cuda* eng)
 
 void Engine_Ext_LorentzMaterial::Apply2CurrentCuda(Engine_cuda* eng)
 {
+	if (Engine_cuda_mgpu* mg = dynamic_cast<Engine_cuda_mgpu*>(eng)) {
+		Apply2CurrentMg(mg);
+		return;
+	}
 	for (int o = 0; o < m_cuda_order; ++o)
 	{
 		if (!m_cuda_iOn[o] || m_cuda_N[o] == 0) continue;

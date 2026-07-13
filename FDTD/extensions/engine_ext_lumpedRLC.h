@@ -23,6 +23,8 @@
 #include "FDTD/operator.h"
 #include "engine_extension_dispatcher.h"
 
+#include <vector>
+
 class Operator_Ext_LumpedRLC;
 
 class Engine_Ext_LumpedRLC : public Engine_Extension
@@ -73,6 +75,19 @@ protected:
 	FDTD_FLOAT *d_Vd2 = NULL;     // Vd[n-2]
 	FDTD_FLOAT *d_J1  = NULL;     // J[n-1]
 	FDTD_FLOAT *d_J2  = NULL;     // J[n-2]
+
+	// multi-GPU: RLC cells partitioned by owning slab (x translated to
+	// slab-local incl. ghost offset). The recurrence is cell-local (touches
+	// only its own volt cell + its own aux state), so per-slab launches are
+	// exact; the engine's volt-halo send runs after Apply2Voltages, so
+	// boundary-plane elements propagate to neighbour slabs correctly.
+	void SetEngineMg(class Engine_cuda_mgpu* mg);
+	void DoPreVoltageUpdatesMg(class Engine_cuda_mgpu* mg);
+	void Apply2VoltagesMg(class Engine_cuda_mgpu* mg);
+	std::vector<rlc_cell*>   mg_cells;
+	std::vector<int>         mg_count;
+	std::vector<int>         mg_dev;
+	std::vector<FDTD_FLOAT*> mg_Il, mg_Vd1, mg_Vd2, mg_J1, mg_J2;
 #endif
 };
 

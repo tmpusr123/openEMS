@@ -5,6 +5,7 @@
 #include "extensions/operator_ext_excitation.h"
 #include "extensions/operator_ext_tfsf.h"
 #include "extensions/operator_ext_lumpedRLC.h"
+#include "extensions/operator_ext_lorentzmaterial.h"
 
 #include "tools/array_ops.h"
 
@@ -31,8 +32,9 @@ Engine* Operator_CUDA::CreateEngine()
 	//   792k+:      4 GPUs fastest (2.2x over 1 at 792k, 3.5x at 98M)
 	// N = cells/150k reproduces the fastest choice at every measured point (and
 	// NVSwitch systems have lower halo latency, so the threshold is safe there).
-	// Also gated on the operator extension set: the mgpu engine supports exactly
-	// {UPML, excitation}; anything else falls back to the single-GPU engine.
+	// Also gated on the operator extension set: the mgpu engine supports
+	// {UPML, excitation, ports, lumped R/L/C, dispersive/ConductingSheet};
+	// anything else falls back to the single-GPU engine.
 	// Overrides: OPENEMS_CUDA_GPUS=<n> forces the slab count;
 	//            OPENEMS_CUDA_VIRTUAL=1 maps all slabs onto one device (testing).
 	const long long MIN_CELLS_PER_GPU = 150000;
@@ -49,20 +51,24 @@ Engine* Operator_CUDA::CreateEngine()
 	cudaGetDeviceCount(&ndev);
 	int max_slabs = virt ? 1024 : ndev;   // virtual mode: any count on one device
 
-	// extension gate: mgpu path implements UPML + excitation. Inert extensions
-	// that openEMS adds unconditionally are also allowed: an INACTIVE TFSF (no
-	// plane-wave source; its hooks early-return at 0 taps) and a LumpedRLC with
-	// zero active cells (added for any port resistor; hooks check the count).
+	// extension gate: the mgpu path implements UPML, excitation, and lumped
+	// R/L/C (elements partitioned by owning slab; the ADE recurrence is
+	// cell-local so per-slab execution is exact). An INACTIVE TFSF (no
+	// plane-wave source; hooks early-return at 0 taps) is also allowed since
+	// openEMS registers it unconditionally. Anything else -> single-GPU.
 	bool ext_ok = true;
 	for (size_t n = 0; n < GetNumberOfExtentions(); ++n)
 	{
 		Operator_Extension* ext = GetExtension(n);
 		if (dynamic_cast<Operator_Ext_UPML*>(ext))       continue;
 		if (dynamic_cast<Operator_Ext_Excitation*>(ext)) continue;
+		if (dynamic_cast<Operator_Ext_LumpedRLC*>(ext))  continue;
+		// Dispersive materials (Drude/Lorentz/Debye) are mgpu-ported (cells
+		// partitioned per slab; the ADE recurrence is cell-local). This also
+		// covers ConductingSheet, which derives from the Lorentz operator.
+		if (dynamic_cast<Operator_Ext_LorentzMaterial*>(ext)) continue;
 		if (Operator_Ext_TFSF* t = dynamic_cast<Operator_Ext_TFSF*>(ext))
 			{ if (!t->IsActive()) continue; }
-		if (Operator_Ext_LumpedRLC* r = dynamic_cast<Operator_Ext_LumpedRLC*>(ext))
-			{ if (r->GetRLCCount() == 0) continue; }
 		ext_ok = false;
 		break;
 	}
@@ -91,7 +97,7 @@ Engine* Operator_CUDA::CreateEngine()
 	if (nslabs > 1 && !ext_ok)
 	{
 		cout << "openEMS CUDA: multi-GPU disabled for this model (an extension "
-		        "other than PML/excitation is active); using a single GPU." << endl;
+		        "without multi-GPU support is active); using a single GPU." << endl;
 		nslabs = 1;
 	}
 

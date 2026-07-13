@@ -84,6 +84,18 @@ Engine_Ext_LorentzMaterial::~Engine_Ext_LorentzMaterial()
 		if (d_iADE[o])  cudaFree(d_iADE[o]);
 		if (d_iLor[o])  cudaFree(d_iLor[o]);
 	}
+	for (size_t g = 0; g < mg_cells.size(); ++g)
+	{
+		cudaSetDevice(mg_dev[g]);
+		for (size_t o = 0; o < mg_cells[g].size(); ++o)
+		{
+			if (mg_cells[g][o]) cudaFree(mg_cells[g][o]);
+			if (mg_vADE[g][o])  cudaFree(mg_vADE[g][o]);
+			if (mg_vLor[g][o])  cudaFree(mg_vLor[g][o]);
+			if (mg_iADE[g][o])  cudaFree(mg_iADE[g][o]);
+			if (mg_iLor[g][o])  cudaFree(mg_iLor[g][o]);
+		}
+	}
 #endif
 }
 
