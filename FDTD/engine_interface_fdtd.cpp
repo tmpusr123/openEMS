@@ -296,6 +296,245 @@ double Engine_Interface_FDTD::GetRawField(unsigned int n, const unsigned int* po
 	return 0.0;
 }
 
+// ---------------------------------------------------------------------------
+// Interpolation stencils for GPU-side field extraction.
+//
+// These mirror GetRawField / GetRawInterpolatedField / *DualField above term
+// for term, but emit (index, coeff) pairs instead of reading live values. The
+// weight math (GetEdgeLength/GetEdgeArea/kappa/epsR/mueR) is identical, so a
+// gather over the emitted entries reproduces the direct path to fp32. Keep in
+// lockstep with the functions above if they ever change.
+// ---------------------------------------------------------------------------
+
+// raw primary field, type 0:E 1:J 2:rotH 3:D  (E/J/D -> volt, rotH -> curr)
+void Engine_Interface_FDTD::BuildRawFieldStencil(unsigned int n, const unsigned int* pos, int type,
+                                                 std::vector<FieldStencilEntry>& e, bool& useCurr) const
+{
+	e.clear();
+	if (type==2) // rot(H): curl of the surrounding current faces / cell area
+	{
+		useCurr = true;
+		double area = m_Op->GetEdgeArea(n,pos);
+		if (area==0) return;
+		double inv = 1.0/area;
+		int nP = (n+1)%3, nPP = (n+2)%3;
+		unsigned int p[3] = {pos[0],pos[1],pos[2]};
+		e.push_back({StencilIndex(nPP,p), (float)( inv)});
+		e.push_back({StencilIndex(nP ,p), (float)(-inv)});
+		if (pos[nPP]>0) { --p[nPP]; e.push_back({StencilIndex(nP ,p), (float)( inv)}); ++p[nPP]; }
+		if (pos[nP] >0) { --p[nP];  e.push_back({StencilIndex(nPP,p), (float)(-inv)}); }
+		return;
+	}
+	useCurr = false;
+	double delta = m_Op->GetEdgeLength(n,pos);
+	if (delta==0) return;
+	if (type==0)
+		e.push_back({StencilIndex(n,pos), (float)(1.0/delta)});
+	else if (type==1 && m_Op->m_kappa_ptr)
+	{
+		ArrayLib::ArrayNIJK<float>& kappa = *m_Op->m_kappa_ptr;
+		e.push_back({StencilIndex(n,pos), (float)(kappa[n][pos[0]][pos[1]][pos[2]]/delta)});
+	}
+	else if (type==3 && m_Op->m_epsR_ptr)
+	{
+		ArrayLib::ArrayNIJK<float>& epsR = *m_Op->m_epsR_ptr;
+		e.push_back({StencilIndex(n,pos), (float)(epsR[n][pos[0]][pos[1]][pos[2]]/delta)});
+	}
+}
+
+// raw dual field, type 0:H 1:B  (both -> curr)
+void Engine_Interface_FDTD::BuildRawDualFieldStencil(unsigned int n, const unsigned int* pos, int type,
+                                                     std::vector<FieldStencilEntry>& e) const
+{
+	e.clear();
+	double delta = m_Op->GetEdgeLength(n,pos,true);
+	if (delta==0) return;
+	if (type==0)
+		e.push_back({StencilIndex(n,pos), (float)(1.0/delta)});
+	else if (type==1 && m_Op->m_mueR_ptr)
+	{
+		ArrayLib::ArrayNIJK<float>& mueR = *m_Op->m_mueR_ptr;
+		e.push_back({StencilIndex(n,pos), (float)(mueR[n][pos[0]][pos[1]][pos[2]]/delta)});
+	}
+}
+
+static inline void _appendScaled(std::vector<FieldStencilEntry>& dst,
+                                 const std::vector<FieldStencilEntry>& src, double scale)
+{
+	for (size_t i=0;i<src.size();++i)
+		dst.push_back({src[i].src, (float)(src[i].coeff*scale)});
+}
+
+// mirror GetRawInterpolatedField (type 0:E 1:J 2:rotH 3:D)
+void Engine_Interface_FDTD::BuildInterpField(const unsigned int* pos, int type,
+                                             std::vector<FieldStencilEntry> out[3]) const
+{
+	std::vector<FieldStencilEntry> raw;
+	bool uc;
+	unsigned int iPos[3] = {pos[0],pos[1],pos[2]};
+	int nP,nPP;
+	double delta;
+	for (int n=0;n<3;++n) { out[n].clear(); iPos[0]=pos[0]; iPos[1]=pos[1]; iPos[2]=pos[2]; }
+	switch (m_InterpolType)
+	{
+	default:
+	case NO_INTERPOLATION:
+		for (int n=0;n<3;++n) { BuildRawFieldStencil(n,pos,type,raw,uc); _appendScaled(out[n],raw,1.0); }
+		break;
+	case NODE_INTERPOLATE:
+		for (int n=0;n<3;++n)
+		{
+			iPos[0]=pos[0]; iPos[1]=pos[1]; iPos[2]=pos[2];
+			if (pos[n]==m_Op->GetNumberOfLines(n,true)-1)
+			{
+				--iPos[n];
+				BuildRawFieldStencil(n,iPos,type,raw,uc); _appendScaled(out[n],raw,1.0);
+				continue;
+			}
+			delta = m_Op->GetEdgeLength(n,iPos);
+			if (delta==0) continue;                 // out[n]=0
+			if (pos[n]==0)
+			{
+				BuildRawFieldStencil(n,iPos,type,raw,uc); _appendScaled(out[n],raw,1.0);
+				continue;
+			}
+			--iPos[n];
+			double deltaDown = m_Op->GetEdgeLength(n,iPos);
+			double deltaRel = delta/(delta+deltaDown);
+			// out[n] = raw(pos)*(1-deltaRel) + raw(pos-e_n)*deltaRel
+			BuildRawFieldStencil(n,iPos,type,raw,uc); _appendScaled(out[n],raw,deltaRel);
+			++iPos[n];
+			BuildRawFieldStencil(n,iPos,type,raw,uc); _appendScaled(out[n],raw,1.0-deltaRel);
+		}
+		break;
+	case CELL_INTERPOLATE:
+		for (int n=0;n<3;++n)
+		{
+			nP=(n+1)%3; nPP=(n+2)%3;
+			if ((pos[0]==m_Op->GetNumberOfLines(0,true)-1) || (pos[1]==m_Op->GetNumberOfLines(1,true)-1) || (pos[2]==m_Op->GetNumberOfLines(2,true)-1))
+				continue;                            // out[n]=0
+			iPos[0]=pos[0]; iPos[1]=pos[1]; iPos[2]=pos[2];
+			BuildRawFieldStencil(n,iPos,type,raw,uc); _appendScaled(out[n],raw,0.25);
+			++iPos[nP];
+			BuildRawFieldStencil(n,iPos,type,raw,uc); _appendScaled(out[n],raw,0.25);
+			++iPos[nPP];
+			BuildRawFieldStencil(n,iPos,type,raw,uc); _appendScaled(out[n],raw,0.25);
+			--iPos[nP];
+			BuildRawFieldStencil(n,iPos,type,raw,uc); _appendScaled(out[n],raw,0.25);
+		}
+		break;
+	}
+}
+
+// mirror GetRawInterpolatedDualField (type 0:H 1:B)
+void Engine_Interface_FDTD::BuildInterpDualField(const unsigned int* pos, int type,
+                                                 std::vector<FieldStencilEntry> out[3]) const
+{
+	std::vector<FieldStencilEntry> raw;
+	unsigned int iPos[3];
+	int nP,nPP;
+	double delta;
+	for (int n=0;n<3;++n) out[n].clear();
+	switch (m_InterpolType)
+	{
+	default:
+	case NO_INTERPOLATION:
+		for (int n=0;n<3;++n) { BuildRawDualFieldStencil(n,pos,type,raw); _appendScaled(out[n],raw,1.0); }
+		break;
+	case NODE_INTERPOLATE:
+		for (int n=0;n<3;++n)
+		{
+			nP=(n+1)%3; nPP=(n+2)%3;
+			if ((pos[0]==m_Op->GetNumberOfLines(0,true)-1) || (pos[1]==m_Op->GetNumberOfLines(1,true)-1) || (pos[2]==m_Op->GetNumberOfLines(2,true)-1) || (pos[nP]==0) || (pos[nPP]==0))
+				continue;                            // out[n]=0
+			iPos[0]=pos[0]; iPos[1]=pos[1]; iPos[2]=pos[2];
+			BuildRawDualFieldStencil(n,iPos,type,raw); _appendScaled(out[n],raw,0.25);
+			--iPos[nP];
+			BuildRawDualFieldStencil(n,iPos,type,raw); _appendScaled(out[n],raw,0.25);
+			--iPos[nPP];
+			BuildRawDualFieldStencil(n,iPos,type,raw); _appendScaled(out[n],raw,0.25);
+			++iPos[nP];
+			BuildRawDualFieldStencil(n,iPos,type,raw); _appendScaled(out[n],raw,0.25);
+		}
+		break;
+	case CELL_INTERPOLATE:
+		for (int n=0;n<3;++n)
+		{
+			iPos[0]=pos[0]; iPos[1]=pos[1]; iPos[2]=pos[2];
+			delta = m_Op->GetEdgeLength(n,iPos,true);
+			if (pos[n]>=m_Op->GetNumberOfLines(n,true)-1)
+				continue;                            // out[n]=0
+			++iPos[n];
+			double deltaUp = m_Op->GetEdgeLength(n,iPos,true);
+			double deltaRel = delta/(delta+deltaUp);
+			--iPos[n];
+			// out[n] = rawDual(pos)*(1-deltaRel) + rawDual(pos+e_n)*deltaRel
+			BuildRawDualFieldStencil(n,iPos,type,raw); _appendScaled(out[n],raw,1.0-deltaRel);
+			++iPos[n];
+			BuildRawDualFieldStencil(n,iPos,type,raw); _appendScaled(out[n],raw,deltaRel);
+		}
+		break;
+	}
+}
+
+bool Engine_Interface_FDTD::BuildFieldStencil(const unsigned int* pos, int dumpType,
+                                              std::vector<FieldStencilEntry> out[3], bool& useCurr) const
+{
+	switch (dumpType)
+	{
+	case 0: BuildInterpField(pos,0,out); useCurr=false; return true;  // E
+	case 2: BuildInterpField(pos,1,out); useCurr=false; return true;  // J (kappa*E)
+	case 4: BuildInterpField(pos,3,out); useCurr=false; return true;  // D (eps*E)
+	case 3: BuildInterpField(pos,2,out); useCurr=true;  return true;  // rotH (curl of curr)
+	case 1: BuildInterpDualField(pos,0,out); useCurr=true; return true; // H
+	case 5: BuildInterpDualField(pos,1,out); useCurr=true; return true; // B (mue*H)
+	default: return false;
+	}
+}
+
+// Evaluate the stencil against the live engine values and compare to the direct
+// Get*Field path at nSamples random positions. Returns worst |diff|/|peak|.
+double Engine_Interface_FDTD::VerifyFieldStencil(int dumpType, int nSamples) const
+{
+	unsigned int N[3] = {m_Op->GetNumberOfLines(0,true), m_Op->GetNumberOfLines(1,true), m_Op->GetNumberOfLines(2,true)};
+	std::vector<FieldStencilEntry> st[3];
+	bool useCurr;
+	double worst = 0.0, peak = 1e-30;
+	unsigned int seed = 12345u;
+	for (int s=0;s<nSamples;++s)
+	{
+		unsigned int pos[3];
+		for (int a=0;a<3;++a) { seed = seed*1664525u+1013904223u; pos[a] = seed % N[a]; }
+		double ref[3];
+		switch (dumpType)
+		{
+		case 0: GetEField(pos,ref); break;
+		case 1: GetHField(pos,ref); break;
+		case 2: GetJField(pos,ref); break;
+		case 3: GetRotHField(pos,ref); break;
+		case 4: GetDField(pos,ref); break;
+		case 5: GetBField(pos,ref); break;
+		default: return -1;
+		}
+		if (!BuildFieldStencil(pos,dumpType,st,useCurr)) return -1;
+		for (int n=0;n<3;++n)
+		{
+			double v = 0.0;
+			for (size_t i=0;i<st[n].size();++i)
+			{
+				unsigned int idx = st[n][i].src;
+				unsigned int comp = idx%3, flat = idx/3;
+				unsigned int z = flat % N[2], y = (flat/N[2]) % N[1], x = flat/(N[2]*N[1]);
+				double fv = useCurr ? m_Eng->GetCurr(comp,x,y,z) : m_Eng->GetVolt(comp,x,y,z);
+				v += (double)st[n][i].coeff * fv;
+			}
+			peak = std::max(peak, std::fabs(ref[n]));
+			worst = std::max(worst, std::fabs(v-ref[n]));
+		}
+	}
+	return worst/peak;
+}
+
 double Engine_Interface_FDTD::CalcFastEnergy() const
 {
 	double E_energy=0.0;

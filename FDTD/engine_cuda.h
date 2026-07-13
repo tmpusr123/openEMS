@@ -5,14 +5,16 @@
 #include "operator_cuda.h"
 
 #include "tools/cuda/array.h"
+#include "Common/field_gather_backend.h"
 
 #include <unordered_set>
 #include <vector>
+#include <mutex>
 
 
 class Operator_CUDA;
 
-class Engine_cuda : public Engine
+class Engine_cuda : public Engine, public FieldGatherBackend
 {
 public:
 	static Engine_cuda* New(const Operator_CUDA* op, unsigned int cuda_device_number);
@@ -26,13 +28,35 @@ public:
 	//!Iterate a number of timesteps
 	virtual bool IterateTS(unsigned int iterTS);
 
-	int inline FlatIndex(int x, int y, int z) const { 
+	//! Pipelined chunks: in full-mirror readback mode the chunk is queued on
+	//! the stream and runs while the caller processes the previous chunk's
+	//! host state; WaitChunk() then syncs, reads the fields back and advances
+	//! numTS. In selective mode (probes may still learn new mirror cells,
+	//! which needs an idle device at the presented timestep) the chunk is
+	//! deferred and executed synchronously inside WaitChunk() -- identical to
+	//! the classic serial loop.
+	virtual bool SupportsAsyncChunks() const {return true;}
+	virtual void LaunchChunkAsync(unsigned int iterTS);
+	virtual bool WaitChunk();
+
+	// --- FieldGatherBackend: on-device field-dump interpolation -----------
+	virtual int RegisterFieldGather(const std::vector<unsigned int>& offsets,
+	                                const std::vector<unsigned int>& src,
+	                                const std::vector<float>& coeff,
+	                                bool useCurr, size_t nOut, float** hostOut);
+	virtual long GetGatherTS(int id) const;
+
+	int inline FlatIndex(int x, int y, int z) const {
 		return x * numLines[1] * numLines[2] + y * numLines[2] + z; 
 	}
 
 
 	unsigned int m_cuda_device_number;
 	int m_supports_coop_launch;
+
+	// env OPENEMS_PROF=1: cumulative seconds spent in the chunk-end readback
+	// (D2H copies + device sync), readable by the run loop for reporting.
+	double m_prof_readback = 0.0;
 
 	virtual double CalcFastEnergy();
 
@@ -117,6 +141,33 @@ protected:
 		return getLinearIndex(n, pos[0], pos[1], pos[2]);
 	}
 
+	// IterateTS split into its async-queueable front half (upload + graph
+	// launches, no sync) and its finishing half (readback + sync + numTS).
+	void LaunchChunkBody(unsigned int iterTS);
+	void FinishChunkBody(unsigned int iterTS);
+	unsigned int m_async_pending = 0;   // timesteps queued by LaunchChunkAsync()
+
+	// On-device field-dump gathers (registered by ProcessFields). Each holds a
+	// CSR interpolation stencil; RunFieldGathers() evaluates them from the
+	// device volt/curr arrays at chunk finish into pinned host buffers.
+	struct GpuGather {
+		unsigned int *d_offsets;  // nOut+1
+		unsigned int *d_src;      // nEntries
+		float        *d_coeff;    // nEntries
+		float        *d_out;      // nOut (device)
+		float        *h_out;      // nOut (pinned host, handed to ProcessFields)
+		size_t        nOut;
+		bool          useCurr;
+		long          ts;         // numTS the h_out buffer currently holds
+	};
+	std::vector<GpuGather> m_gathers;
+	void RunFieldGathers();      // enqueue all gathers on the work stream
+	void FreeFieldGathers();
+
+	double ComputeDeviceEnergy();          // raw device energy reduction (syncs)
+	double m_energy_cache = 0.0;           // energy at last chunk finish
+	bool   m_energy_valid = false;         // cache holds a chunk-consistent value
+
 	dim3 m_dim;
 
 	FDTD_FLOAT *d_fastEnergy;
@@ -159,6 +210,7 @@ private:
 	// volt/curr arrays back every chunk, learn that cell footprint on demand and
 	// refresh only those cells. Falls back to a full readback if the footprint
 	// grows large (e.g. a field dump over a big region).
+	mutable std::mutex m_rb_mtx;                  // guards cell learning (parallel dump extraction)
 	mutable std::unordered_set<int> m_rb_cells;   // cell indices the mirror must track
 	mutable bool m_rb_fullmode;                    // true -> copy the whole array
 	void EnsureCellHost(int cell) const;           // on-demand fetch of a first-seen cell

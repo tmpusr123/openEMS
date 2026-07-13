@@ -33,6 +33,9 @@
 #include "FDTD/extensions/operator_ext_upml.h"
 #include "FDTD/extensions/operator_ext_lorentzmaterial.h"
 #include "FDTD/extensions/operator_ext_lumpedRLC.h"
+#ifdef WITH_CUDA
+#include "FDTD/engine_cuda.h"
+#endif
 #include "FDTD/extensions/operator_ext_conductingsheet.h"
 #include "FDTD/extensions/operator_ext_steadystate.h"
 #include "FDTD/extensions/engine_ext_steadystate.h"
@@ -1320,10 +1323,59 @@ void openEMS::RunFDTD()
 	if ((step<0) || (step>(int)NrTS)) step=NrTS;
 	printf("start run in %d steps\n", step);
 
-	while ((FDTD_Eng->GetNumberOfTimesteps()<NrTS) && (change>endCrit) && !CheckAbortCond())
+	// Software-pipelined run loop. Each chunk is launched (LaunchChunkAsync)
+	// and only later awaited (WaitChunk); in between, the host processes the
+	// PREVIOUS chunk's fields (dump extraction, probes, energy). On the CUDA
+	// engine in full-mirror mode this overlaps the host-side field-monitor
+	// extraction with the next chunk's GPU compute, so a heavy E/H/RotH dump
+	// costs max(GPU, host) per chunk instead of their sum. Engines without a
+	// real async implementation (CPU, and the CUDA selective-readback path)
+	// fall back to the default Launch/Wait, which just runs the chunk
+	// synchronously inside WaitChunk() -- identical to the classic loop.
+	//
+	// The next chunk's size is predicted with PeekNextInterval() (no samples
+	// consumed) so it can be launched before this chunk is processed. The
+	// early-stop decision necessarily uses the previous chunk's 'change', so
+	// convergence runs may compute at most one extra chunk vs. the serial loop
+	// -- but every processed chunk sees correct fields, and the CPU and CUDA
+	// engines run this identical loop, so they still stop at the same step.
+	// Fixed-length runs (EndCriteria tiny) compute exactly NrTS steps either
+	// way, so bit-exact CPU<->GPU comparisons are unaffected.
+	double _prof_wait = 0, _prof_proc = 0;
+	timeval _pv0, _pv1, _pv2;
+	bool have_inflight = false;
+	if ((FDTD_Eng->GetNumberOfTimesteps()<NrTS) && (change>endCrit) && !CheckAbortCond())
 	{
-		FDTD_Eng->IterateTS(step);
-		step=PA->Process();
+		FDTD_Eng->LaunchChunkAsync(step);
+		have_inflight = true;
+	}
+	while (have_inflight)
+	{
+		gettimeofday(&_pv0, NULL);
+		FDTD_Eng->WaitChunk();            // complete the in-flight chunk
+		gettimeofday(&_pv1, NULL);
+		currTS = FDTD_Eng->GetNumberOfTimesteps();
+
+		// Decide on (and launch) the next chunk BEFORE processing this one, so
+		// its GPU compute overlaps the host work below. Uses this iteration's
+		// 'change' (the same information the serial loop's while-condition saw).
+		bool cont = (currTS<(int)NrTS) && (change>endCrit) && !CheckAbortCond();
+		have_inflight = false;
+		if (cont)
+		{
+			int nextstep = PA->PeekNextInterval();
+			if ((nextstep<0) || (nextstep>(int)(NrTS - currTS))) nextstep=NrTS - currTS;
+			if (nextstep>0)
+			{
+				FDTD_Eng->LaunchChunkAsync(nextstep);
+				have_inflight = true;
+			}
+		}
+
+		step=PA->Process();               // host dump/probe work, overlaps next chunk
+		gettimeofday(&_pv2, NULL);
+		_prof_wait += (_pv1.tv_sec-_pv0.tv_sec) + 1e-6*(_pv1.tv_usec-_pv0.tv_usec);
+		_prof_proc += (_pv2.tv_sec-_pv1.tv_sec) + 1e-6*(_pv2.tv_usec-_pv1.tv_usec);
 
 		// Re-evaluate the end criterion every chunk at a deterministic,
 		// timestep-based cadence rather than only inside the 4s print block
@@ -1349,10 +1401,6 @@ void openEMS::RunFDTD()
 		{
 			change = Eng_Ext_SSD->GetLastDiff();
 		}
-
-//		cout << " do " << step << " steps; current: " << eng.GetNumberOfTimesteps() << endl;
-		currTS = FDTD_Eng->GetNumberOfTimesteps();
-		if ((step<0) || (step>(int)(NrTS - currTS))) step=NrTS - currTS;
 
 		gettimeofday(&currTime,NULL);
 
@@ -1389,6 +1437,20 @@ void openEMS::RunFDTD()
 			FDTD_Eng->NextInterval(speed);
 		}
 	}
+	if (getenv("OPENEMS_PROF"))
+	{
+		double rb = 0;
+#ifdef WITH_CUDA
+		if (Engine_cuda* ec = dynamic_cast<Engine_cuda*>(FDTD_Eng))
+			rb = ec->m_prof_readback;
+#endif
+		// WaitChunk and Process overlap when the engine pipelines, so these two
+		// wall-time sums can exceed the true elapsed run time -- that gap is the
+		// overlap the pipeline buys back.
+		fprintf(stderr, "[PROF] WaitChunk (GPU compute + readback): %.2fs (of which readback+sync: %.2fs) | PA->Process (host dump/probe work + file IO): %.2fs\n",
+		        _prof_wait, rb, _prof_proc);
+	}
+
 	if ((change>endCrit) && (FDTD_Op->GetExcitationSignal()->GetExciteType()==0))
 		cerr << "RunFDTD: Warning: Max. number of timesteps was reached before the end-criteria of -" << fabs(10.0*log10(endCrit)) << "dB was reached... " << endl << \
 				"\tYou may want to choose a higher number of max. timesteps... " << endl;

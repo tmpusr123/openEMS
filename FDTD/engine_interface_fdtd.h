@@ -19,10 +19,25 @@
 #define ENGINE_INTERFACE_FDTD_H
 
 #include <cmath>
+#include <vector>
 
 #include "Common/engine_interface_base.h"
 #include "operator.h"
 #include "engine.h"
+
+//! One term of a field-interpolation stencil: coeff * <volt|curr>[src].
+//
+// Every interpolated dump field is a fixed linear combination of the engine's
+// raw edge/face values, with time-invariant weights (edge lengths, cell areas,
+// eps/kappa/mue). BuildFieldStencil() emits that combination so it can be
+// evaluated on the GPU as a simple gather -- reading the device field arrays
+// directly, no host readback and no material arrays uploaded. `src` is the flat
+// index into the engine's volt/curr array: (x*NY*NZ + y*NZ + z)*3 + comp.
+struct FieldStencilEntry
+{
+	unsigned int src;
+	float        coeff;
+};
 
 class Engine_Interface_FDTD : public Engine_Interface_Base
 {
@@ -54,9 +69,43 @@ public:
 
 	virtual double CalcFastEnergy() const;
 
+	//! Build the interpolation stencil at output position \p pos for a
+	//! ProcessFields dump type (0:E 1:H 2:J 3:rotH 4:D 5:B). Emits one entry
+	//! list per output component (each summing to that component's value) and
+	//! sets \p useCurr (true -> entries index the curr array, else volt). The
+	//! coefficients reproduce GetEField/GetHField/... exactly, so a GPU gather
+	//! over these entries matches the host CalcField to fp32. Returns false if
+	//! the dump type is unknown (caller must fall back to the host path).
+	bool BuildFieldStencil(const unsigned int* pos, int dumpType,
+	                       std::vector<FieldStencilEntry> out[3], bool& useCurr) const;
+
+	//! Self-check: for \p nSamples random positions, verify the stencil
+	//! evaluates (against the live engine values) to the same vector as the
+	//! direct GetEField/... path. Returns the worst |difference|/|peak|.
+	double VerifyFieldStencil(int dumpType, int nSamples) const;
+
 protected:
 	Operator* m_Op;
 	Engine* m_Eng;
+
+	//! Flat index into the engine volt/curr array for (comp n, position pos).
+	inline unsigned int StencilIndex(unsigned int n, const unsigned int* pos) const
+	{
+		return (pos[0]*m_Op->GetNumberOfLines(1)*m_Op->GetNumberOfLines(2)
+		        + pos[1]*m_Op->GetNumberOfLines(2) + pos[2])*3 + n;
+	}
+	//! Emit the raw (un-interpolated) primary-field stencil for component n.
+	//! type: 0:E 1:J 2:rotH 3:D. Sets useCurr (rotH -> curr, else volt).
+	void BuildRawFieldStencil(unsigned int n, const unsigned int* pos, int type,
+	                          std::vector<FieldStencilEntry>& e, bool& useCurr) const;
+	//! Emit the raw dual-field stencil for component n. type: 0:H 1:B (curr).
+	void BuildRawDualFieldStencil(unsigned int n, const unsigned int* pos, int type,
+	                              std::vector<FieldStencilEntry>& e) const;
+	//! Interpolated primary/dual field stencils (mirror Get*InterpolatedField).
+	void BuildInterpField(const unsigned int* pos, int type,
+	                      std::vector<FieldStencilEntry> out[3]) const;
+	void BuildInterpDualField(const unsigned int* pos, int type,
+	                          std::vector<FieldStencilEntry> out[3]) const;
 
 	//! Internal method to get an interpolated field of a given type. (0: E, 1: J, 2: rotH, 3: D)
 	virtual double* GetRawInterpolatedField(const unsigned int* pos, double* out, int type) const;

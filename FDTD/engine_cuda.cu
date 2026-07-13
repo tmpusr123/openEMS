@@ -12,6 +12,7 @@
 #include <cooperative_groups.h>
 
 #include <cuda_runtime.h>
+#include <sys/time.h>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -429,6 +430,7 @@ void Engine_cuda::Init() {
 }
 
 void Engine_cuda::Reset() {
+    FreeFieldGathers();
     if (m_graph_ready) {
         cudaGraphExecDestroy(m_graphExec);
         cudaGraphDestroy(m_graph);
@@ -506,7 +508,8 @@ void Engine_cuda::AddCurr(unsigned int n, const unsigned int pos[3], FDTD_FLOAT 
 }
 
 
-double Engine_cuda::CalcFastEnergy()
+// Whole-grid energy reduction straight off the device (syncs via load_to_host).
+double Engine_cuda::ComputeDeviceEnergy()
 {
     // Runs outside the captured graph, so a memset + multi-block launch is fine.
     int total = numLines[0] * numLines[1] * numLines[2];
@@ -522,6 +525,17 @@ double Engine_cuda::CalcFastEnergy()
     return m_energy_sum->host_data()[0];
 }
 
+double Engine_cuda::CalcFastEnergy()
+{
+    // With GPU field gathers active the loop pipelines and the device may be
+    // computing the NEXT chunk when the run loop asks for energy. Return the
+    // value cached at this chunk's finish (device-idle, chunk-consistent) so
+    // the reading matches the fields the host is processing -- and so it does
+    // not stall the pipeline by syncing on the in-flight chunk.
+    if (m_energy_valid) return m_energy_cache;
+    return ComputeDeviceEnergy();
+}
+
 // Other methods (InitExtensions, SortExtensionByPriority, etc.) remain unchanged unless extensions need CUDA support
 
 // Fetch a single cell's volt+curr into the host mirror the first time a probe
@@ -532,6 +546,9 @@ double Engine_cuda::CalcFastEnergy()
 void Engine_cuda::EnsureCellHost(int cell) const
 {
     if (m_rb_fullmode) return;
+    // dump extraction calls GetVolt/GetCurr from parallel threads; guard the
+    // cell-learning state (fullmode fast path above stays lock-free)
+    std::lock_guard<std::mutex> lk(m_rb_mtx);
     if (m_rb_cells.find(cell) != m_rb_cells.end()) return;   // already refreshed
 
     m_rb_cells.insert(cell);
@@ -633,6 +650,57 @@ void Engine_cuda::RunOneTimestep()
 }
 
 bool Engine_cuda::IterateTS(unsigned int iterTS) {
+    LaunchChunkBody(iterTS);
+    FinishChunkBody(iterTS);
+    return true;
+}
+
+// Pipelined chunks (see engine_cuda.h): in full-mirror mode queue the chunk
+// and return immediately -- the caller processes the previous chunk's host
+// state while the GPU computes. In selective-readback mode defer to the base
+// class (synchronous execution inside WaitChunk), since probes may still
+// learn new mirror cells, which requires an idle device at the presented
+// timestep.
+void Engine_cuda::LaunchChunkAsync(unsigned int iterTS) {
+    // Pipeline when there is host-side work to overlap with the next chunk:
+    // either a full-mirror readback, or GPU field gathers (whose HDF5 writes
+    // run on the host while the next chunk computes).
+    if (!m_rb_fullmode && m_gathers.empty()) {
+        Engine::LaunchChunkAsync(iterTS);
+        return;
+    }
+    LaunchChunkBody(iterTS);
+    // The host mirror still presents the *previous* chunk's state and stays
+    // untouched until FinishChunkBody -- reading it during the flight is the
+    // whole point of the pipeline, so don't leave it locked.
+    m_host_data_locked = false;
+    // The pre-chunk host edits are now uploaded; clear the flags so WaitChunk's
+    // guard can detect any *new* host write that sneaks in during the flight.
+    m_volt_updated = 0;
+    m_curr_updated = 0;
+    m_async_pending += iterTS;
+}
+
+bool Engine_cuda::WaitChunk() {
+    if (m_async_pending) {
+        // Host field writes while a chunk is in flight would race the queued
+        // GPU work; nothing in openEMS's run loop does this -- fail loudly if
+        // that ever changes rather than corrupt the fields silently.
+        if (m_volt_updated || m_curr_updated) {
+            fprintf(stderr, "Engine_cuda::WaitChunk: host wrote fields while an async chunk was in flight -- unsupported, aborting\n");
+            abort();
+        }
+        FinishChunkBody(m_async_pending);
+        m_async_pending = 0;
+        return true;
+    }
+    return Engine::WaitChunk();   // run a deferred (selective-mode) chunk
+}
+
+// Queue one chunk on the per-thread stream: upload a host-modified mirror,
+// seed the device timestep counter, replay the per-timestep graph iterTS
+// times. Everything is async -- no host sync, numTS untouched.
+void Engine_cuda::LaunchChunkBody(unsigned int iterTS) {
     m_volt_updated_by_host = 1;
     m_curr_updated_by_host = 1;
 
@@ -668,7 +736,15 @@ bool Engine_cuda::IterateTS(unsigned int iterTS) {
     for (unsigned int iter = 0; iter < iterTS; ++iter) {
         checkCuda(cudaGraphLaunch(m_graphExec, cudaStreamPerThread));
     }
+}
+
+// Finish a queued chunk: read the fields back into the host mirror, sync,
+// and make the chunk visible (numTS advance, mirror unlocked).
+void Engine_cuda::FinishChunkBody(unsigned int iterTS) {
     numTS += iterTS;
+
+    timeval _pt0, _pt1;
+    gettimeofday(&_pt0, NULL);
 
     // Refresh the host field mirror for host-side probes/dumps. Only the cells
     // probes actually read are copied back (learned on demand); a whole-array
@@ -683,13 +759,142 @@ bool Engine_cuda::IterateTS(unsigned int iterTS) {
         SelectiveReadback();
     }
 
+    // On-device field-dump interpolation: the device holds this chunk's fields
+    // right now, so gather the registered dump stencils straight from the
+    // device arrays (no full-array readback needed). Enqueued on the same
+    // stream, completed by the sync below.
+    RunFieldGathers();
+
+    // With GPU gathers, dumps no longer force a whole-mirror readback, so the
+    // energy end-criterion can't read the mirror. Enqueue a device-side energy
+    // reduction here (device holds this chunk's fields), piggybacked on the
+    // single sync below -- no extra sync, no pipeline stall. CalcFastEnergy()
+    // then returns this cached, chunk-consistent value.
+    if (!m_gathers.empty()) {
+        int total = numLines[0] * numLines[1] * numLines[2];
+        int blocks = (total + THREADS - 1) / THREADS;
+        if (blocks > 184) blocks = 184;
+        checkCuda(cudaMemsetAsync(m_energy_sum->device_data(), 0, sizeof(double), cudaStreamPerThread));
+        calcFastEnergyKernel<<<blocks, THREADS, 0, cudaStreamPerThread>>>(
+            volt_array->device_data(), curr_array->device_data(), m_energy_sum->device_data(), m_dim);
+        checkCuda(cudaMemcpyAsync(m_energy_sum->host_data(), m_energy_sum->device_data(),
+                                  sizeof(double), cudaMemcpyDeviceToHost, cudaStreamPerThread));
+    }
+
     // Async copies land in pinned host memory; sync before host reads them.
     cudaDeviceSynchronize();
     SelectiveReadbackFinish();   // scatter staged probe cells into the mirror
 
+    if (!m_gathers.empty()) {
+        m_energy_cache = m_energy_sum->host_data()[0];
+        m_energy_valid = true;
+    }
+
+    gettimeofday(&_pt1, NULL);
+    m_prof_readback += (_pt1.tv_sec - _pt0.tv_sec) + 1e-6 * (_pt1.tv_usec - _pt0.tv_usec);
+
     m_host_data_locked = false;
     m_volt_updated = 0;
     m_curr_updated = 0;
-    return true;
+}
+
+// ---------------------------------------------------------------------------
+// On-device field-dump gather (FieldGatherBackend)
+// ---------------------------------------------------------------------------
+
+// out[o] = sum over CSR entries [offsets[o],offsets[o+1]) of coeff*src[idx].
+// src is the full device volt or curr array; idx already folds in the component
+// (idx = (x*ny*nz+y*nz+z)*3 + comp), coeff folds in all geometry/material.
+__global__ void fieldGatherKernel(const FDTD_FLOAT* __restrict__ src,
+                                  const unsigned int* __restrict__ offsets,
+                                  const unsigned int* __restrict__ idx,
+                                  const float* __restrict__ coeff,
+                                  float* __restrict__ out, int nOut)
+{
+    int o = blockIdx.x * blockDim.x + threadIdx.x;
+    if (o >= nOut) return;
+    unsigned int a = offsets[o], b = offsets[o + 1];
+    float v = 0.0f;
+    for (unsigned int e = a; e < b; ++e)
+        v += coeff[e] * (float)src[idx[e]];
+    out[o] = v;
+}
+
+void Engine_cuda::RunFieldGathers()
+{
+    for (size_t g = 0; g < m_gathers.size(); ++g) {
+        GpuGather &G = m_gathers[g];
+        const FDTD_FLOAT *src = G.useCurr ? GetDeviceCurrData() : GetDeviceVoltData();
+        int nOut = (int)G.nOut;
+        int block = 128, grid = (nOut + block - 1) / block;
+        fieldGatherKernel<<<grid, block, 0, cudaStreamPerThread>>>(
+            src, G.d_offsets, G.d_src, G.d_coeff, G.d_out, nOut);
+        checkCuda(cudaMemcpyAsync(G.h_out, G.d_out, G.nOut * sizeof(float),
+                                  cudaMemcpyDeviceToHost, cudaStreamPerThread));
+        G.ts = (long)numTS;   // fields on device correspond to this timestep
+    }
+}
+
+int Engine_cuda::RegisterFieldGather(const std::vector<unsigned int>& offsets,
+                                     const std::vector<unsigned int>& src,
+                                     const std::vector<float>& coeff,
+                                     bool useCurr, size_t nOut, float** hostOut)
+{
+    if (offsets.size() != nOut + 1 || src.size() != coeff.size())
+        return -1;
+
+    // Budget check: skip GPU gather if it would take too much of the device's
+    // free memory (caller then uses the host interpolation path).
+    size_t need = offsets.size() * sizeof(unsigned int)
+                + src.size() * (sizeof(unsigned int) + sizeof(float))
+                + nOut * sizeof(float);
+    size_t freeB = 0, totB = 0;
+    if (cudaMemGetInfo(&freeB, &totB) != cudaSuccess) { cudaGetLastError(); return -1; }
+    if (need > freeB / 2) {
+        fprintf(stderr, "Engine_cuda: field-dump gather needs %.0f MB > half of %.0f MB free -- using host path\n",
+                need / 1048576.0, freeB / 1048576.0);
+        return -1;
+    }
+
+    GpuGather G;
+    G.nOut = nOut;
+    G.useCurr = useCurr;
+    G.ts = -1;
+    if (cudaMalloc(&G.d_offsets, offsets.size() * sizeof(unsigned int)) != cudaSuccess) { cudaGetLastError(); return -1; }
+    if (cudaMalloc(&G.d_src, src.size() * sizeof(unsigned int)) != cudaSuccess ||
+        cudaMalloc(&G.d_coeff, coeff.size() * sizeof(float)) != cudaSuccess ||
+        cudaMalloc(&G.d_out, nOut * sizeof(float)) != cudaSuccess ||
+        cudaHostAlloc(&G.h_out, nOut * sizeof(float), cudaHostAllocDefault) != cudaSuccess) {
+        cudaGetLastError();
+        // best-effort cleanup of whatever succeeded
+        cudaFree(G.d_offsets); cudaFree(G.d_src); cudaFree(G.d_coeff); cudaFree(G.d_out);
+        return -1;
+    }
+    checkCuda(cudaMemcpy(G.d_offsets, offsets.data(), offsets.size() * sizeof(unsigned int), cudaMemcpyHostToDevice));
+    checkCuda(cudaMemcpy(G.d_src, src.data(), src.size() * sizeof(unsigned int), cudaMemcpyHostToDevice));
+    checkCuda(cudaMemcpy(G.d_coeff, coeff.data(), coeff.size() * sizeof(float), cudaMemcpyHostToDevice));
+    memset(G.h_out, 0, nOut * sizeof(float));
+
+    *hostOut = G.h_out;
+    m_gathers.push_back(G);
+    return (int)m_gathers.size() - 1;
+}
+
+long Engine_cuda::GetGatherTS(int id) const
+{
+    if (id < 0 || id >= (int)m_gathers.size()) return -1;
+    return m_gathers[id].ts;
+}
+
+void Engine_cuda::FreeFieldGathers()
+{
+    for (size_t g = 0; g < m_gathers.size(); ++g) {
+        cudaFree(m_gathers[g].d_offsets);
+        cudaFree(m_gathers[g].d_src);
+        cudaFree(m_gathers[g].d_coeff);
+        cudaFree(m_gathers[g].d_out);
+        cudaFreeHost(m_gathers[g].h_out);
+    }
+    m_gathers.clear();
 }
 

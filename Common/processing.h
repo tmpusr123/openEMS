@@ -82,6 +82,12 @@ public:
 	//! Process data during simulation run.
 	virtual int Process() {return GetNextInterval();}
 
+	//! Predict what Process() will return at the current timestep, without
+	//! consuming any samples. Equals the post-Process() GetNextInterval() (any
+	//! deviation is smaller, i.e. a harmless extra chunk boundary). Needed by
+	//! the pipelined run loop to size the next chunk before processing.
+	int PeekNextInterval() const;
+
 	//! Process data after simulation has finished.
 	virtual void PostProcess();
 
@@ -192,6 +198,9 @@ public:
 
 	//! Invoke Process() on all Processings. Will return the smallest next iteration interval.
 	int Process();
+
+	//! Predict the next Process() return value without consuming samples (see Processing::PeekNextInterval).
+	int PeekNextInterval() const;
 
 	//! Invoke PostProcess() on all Processings.
 	void PostProcess();

@@ -13,6 +13,7 @@
 #include <cstring>
 #include <string>
 #include <unordered_map>
+#include <mutex>
 #include <stdexcept>
 #include <iostream>
 
@@ -550,6 +551,51 @@ void Engine_cuda_mgpu::RunOneTimestepMg(int parity)
 
 bool Engine_cuda_mgpu::IterateTS(unsigned int iterTS)
 {
+    LaunchChunkBodyMg(iterTS);
+    FinishChunkBodyMg(iterTS);
+    return true;
+}
+
+// Pipelined chunks (mirrors Engine_cuda): full-mirror mode queues the chunk on
+// the per-slab streams and returns; selective mode defers to the synchronous
+// base-class path (probes may still learn new mirror cells).
+void Engine_cuda_mgpu::LaunchChunkAsync(unsigned int iterTS)
+{
+    if (!m_full)
+    {
+        Engine::LaunchChunkAsync(iterTS);
+        return;
+    }
+    LaunchChunkBodyMg(iterTS);
+    // Host mirror still shows the previous chunk (frozen until FinishChunkBodyMg);
+    // unlock it for in-flight probe/dump reads, and clear the dirty flags so
+    // WaitChunk's guard can spot a stray host write during the flight.
+    m_locked = false;
+    m_volt_dirty = 0;
+    m_curr_dirty = 0;
+    m_async_pending += iterTS;
+}
+
+bool Engine_cuda_mgpu::WaitChunk()
+{
+    if (m_async_pending)
+    {
+        if (m_volt_dirty || m_curr_dirty)
+        {
+            fprintf(stderr, "Engine_cuda_mgpu::WaitChunk: host wrote fields while an async chunk was in flight -- unsupported, aborting\n");
+            abort();
+        }
+        FinishChunkBodyMg(m_async_pending);
+        m_async_pending = 0;
+        return true;
+    }
+    return Engine::WaitChunk();
+}
+
+// Queue one chunk on all slab streams (upload host edits, seed counters,
+// replay timesteps). Async: no host sync, numTS untouched.
+void Engine_cuda_mgpu::LaunchChunkBodyMg(unsigned int iterTS)
+{
     if (m_volt_dirty || m_curr_dirty)
         UploadHostMirror();
     m_locked = true;
@@ -566,6 +612,11 @@ bool Engine_cuda_mgpu::IterateTS(unsigned int iterTS)
         RunOneTimestepMg((int)(m_step_counter & 1));
         ++m_step_counter;
     }
+}
+
+// Finish a queued chunk: read fields back, sync all slab streams, make visible.
+void Engine_cuda_mgpu::FinishChunkBodyMg(unsigned int iterTS)
+{
     numTS += iterTS;
 
     // refresh the host mirror for probes/dumps
@@ -596,7 +647,6 @@ bool Engine_cuda_mgpu::IterateTS(unsigned int iterTS)
     m_locked = false;
     m_volt_dirty = 0;
     m_curr_dirty = 0;
-    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -633,6 +683,8 @@ void Engine_cuda_mgpu::UploadHostMirror()
 void Engine_cuda_mgpu::EnsureCellHostMg(int cell) const
 {
     if (m_full) return;
+    // parallel dump extraction: guard the cell-learning state
+    std::lock_guard<std::mutex> lk(m_rb_mtx_mg);
     if (m_cells.find(cell) != m_cells.end()) return;
     m_cells.insert(cell);
     m_dirty = true;

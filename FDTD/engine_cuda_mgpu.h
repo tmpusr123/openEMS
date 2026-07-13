@@ -5,6 +5,7 @@
 
 #include <vector>
 #include <unordered_set>
+#include <mutex>
 
 //! One GPU's slab of the simulation domain.
 //
@@ -57,6 +58,19 @@ public:
 	virtual void Reset();
 
 	virtual bool IterateTS(unsigned int iterTS);
+
+	// Pipelined chunks (see Engine_cuda): full-mirror mode overlaps the next
+	// chunk's GPU compute with host-side processing of the previous chunk.
+	virtual void LaunchChunkAsync(unsigned int iterTS);
+	virtual bool WaitChunk();
+
+	// On-device field gather is single-GPU only for now; decline so dumps use
+	// the host interpolation path (already fast + pipelined on multi-GPU).
+	virtual int RegisterFieldGather(const std::vector<unsigned int>&,
+	                                const std::vector<unsigned int>&,
+	                                const std::vector<float>&,
+	                                bool, size_t, float**) { return -1; }
+
 	virtual double CalcFastEnergy();
 
 	virtual void AddVolt(unsigned int n, const unsigned int pos[3], FDTD_FLOAT value);
@@ -90,6 +104,8 @@ protected:
 
 private:
 	void RunOneTimestepMg(int parity);
+	void LaunchChunkBodyMg(unsigned int iterTS);   // async front half of IterateTS
+	void FinishChunkBodyMg(unsigned int iterTS);   // sync/readback back half
 	void HaloSendVolt(int parity);   // step 3 sends+records (all slabs)
 	void HaloSendCurr(int parity);   // step 5 sends+records (all slabs)
 	int  OwnerSlab(int x) const;
@@ -125,6 +141,7 @@ private:
 	bool m_locked = false;
 
 	// selective readback (per-slab batched gather, mirrors the single-GPU path)
+	mutable std::mutex m_rb_mtx_mg;               // guards cell learning
 	mutable std::unordered_set<int> m_cells;
 	mutable bool m_full = false;
 	mutable bool m_dirty = true;

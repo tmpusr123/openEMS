@@ -101,6 +101,21 @@ protected:
 
 	//! Calculate and return the defined field. Caller has to cleanup the array.
 	FDTD_FLOAT**** CalcField();
+
+	// --- GPU field-dump gather (on-device interpolation) ------------------
+	// One-time attempt to offload interpolation to the engine: build the CSR
+	// stencil over the dump box and register it. No-op unless the engine is a
+	// single-GPU CUDA engine and the dump type is supported.
+	void SetupGpuGather();
+	void EnsureGpuGather() { if (!m_gpu_tried) SetupGpuGather(); }
+	bool GpuActive() const { return m_gpu_dump_id>=0; }
+	//! Pinned gather buffer (HDF5 layout {3,NK,NJ,NI}) if it holds the current
+	//! timestep, else NULL. Lets subclasses write it straight to HDF5.
+	const float* GpuFreshBuffer() const;
+	class FieldGatherBackend* m_gpu_backend; //!< engine gather backend, or NULL
+	int    m_gpu_dump_id;                    //!< registered dump id, or -1
+	float* m_gpu_hostbuf;                    //!< engine-owned pinned buffer
+	bool   m_gpu_tried;                      //!< SetupGpuGather already attempted
 };
 
 #endif // PROCESSFIELDS_H

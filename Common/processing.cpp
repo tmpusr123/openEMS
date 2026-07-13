@@ -131,6 +131,37 @@ int Processing::GetNextInterval() const
 	return next;
 }
 
+int Processing::PeekNextInterval() const
+{
+	if (Enabled==false) return -1;
+	int next=INT_MAX;
+	int ts = (int)m_Eng_Interface->GetNumberOfTimesteps();
+	// Entries due at the current timestep are about to be consumed by the
+	// imminent Process(); skip them (plus any stale ones Process() can never
+	// consume) so the peek matches the post-Process() GetNextInterval().
+	size_t pos = m_PS_pos;
+	while ((m_ProcessSteps.size()>pos) && ((int)m_ProcessSteps.at(pos)<=ts))
+		++pos;
+	if (m_ProcessSteps.size()>pos)
+		next = (int)m_ProcessSteps.at(pos)-ts;
+	if (ProcessInterval!=0)
+	{
+		int next_Interval = (int)ProcessInterval - ts%ProcessInterval;
+		if (next_Interval<next)
+			next = next_Interval;
+	}
+
+	//check for FD sample interval
+	if (m_FD_Interval!=0)
+	{
+		int next_Interval = (int)m_FD_Interval - ts%m_FD_Interval;
+		if (next_Interval<next)
+			next = next_Interval;
+	}
+
+	return next;
+}
+
 void Processing::AddStep(unsigned int step)
 {
 	if (m_ProcessSteps.size()==0)
@@ -359,6 +390,18 @@ int ProcessingArray::Process()
 	for (size_t i=0; i<ProcessArray.size(); ++i)
 	{
 		int step = ProcessArray.at(i)->Process();
+		if ((step>0) && (step<nextProcess))
+			nextProcess=step;
+	}
+	return nextProcess;
+}
+
+int ProcessingArray::PeekNextInterval() const
+{
+	int nextProcess=maxInterval;
+	for (size_t i=0; i<ProcessArray.size(); ++i)
+	{
+		int step = ProcessArray.at(i)->PeekNextInterval();
 		if ((step>0) && (step<nextProcess))
 			nextProcess=step;
 	}

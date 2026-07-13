@@ -51,6 +51,27 @@ public:
 	//!Iterate a number of timesteps
 	virtual bool IterateTS(unsigned int iterTS);
 
+	//! Pipelined chunk execution (optional engine capability).
+	//
+	// LaunchChunkAsync() queues a chunk of iterTS timesteps; its results
+	// (numTS, host-visible fields) only become observable at the next
+	// WaitChunk(), which returns true if it made a chunk visible. Between the
+	// two calls the engine may compute in the background while the caller does
+	// host-side work on the *previous* chunk's state. The default
+	// implementation simply defers the chunk and runs it synchronously inside
+	// WaitChunk() -- exactly equivalent to a plain IterateTS() -- so callers
+	// can use the Launch/Wait pattern unconditionally.
+	virtual bool SupportsAsyncChunks() const {return false;}
+	virtual void LaunchChunkAsync(unsigned int iterTS) {m_deferred_chunk += iterTS;}
+	virtual bool WaitChunk()
+	{
+		if (m_deferred_chunk==0) return false;
+		unsigned int n = m_deferred_chunk;
+		m_deferred_chunk = 0;
+		IterateTS(n);
+		return true;
+	}
+
 	virtual unsigned int GetNumberOfTimesteps() {return numTS;}
 
 	virtual void NextInterval(float curr_speed) {};
@@ -139,6 +160,7 @@ protected:
 	ArrayLib::ArrayNIJK<FDTD_FLOAT>* volt_ptr;
 	ArrayLib::ArrayNIJK<FDTD_FLOAT>* curr_ptr;
 	unsigned int numTS;
+	unsigned int m_deferred_chunk = 0; // chunk queued by LaunchChunkAsync(), run at WaitChunk()
 
 	virtual void InitExtensions();
 	virtual void ClearExtensions();

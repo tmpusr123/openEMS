@@ -223,6 +223,14 @@ if (WITH_CUDA)
   INCLUDE_DIRECTORIES(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 endif()
 
+# OpenMP parallelizes the host-side field-monitor extraction
+# (Common/processfields.cpp CalcField) -- the dominant cost of E/H/RotH dumps
+# on the fast engines. C++ only; nvcc-compiled files are unaffected.
+find_package(OpenMP QUIET)
+if(OpenMP_CXX_FOUND)
+  message(STATUS "OpenMP found -- parallel field-dump extraction enabled")
+endif()
+
 TARGET_LINK_LIBRARIES( openEMS
   ${CSXCAD_LIBRARIES}
   ${fparser_LIBRARIES}
@@ -233,6 +241,10 @@ TARGET_LINK_LIBRARIES( openEMS
   ${vtk_LIBS}
   ${MPI_LIBRARIES}
 )
+if(OpenMP_CXX_FOUND)
+  target_compile_options(openEMS PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${OpenMP_CXX_FLAGS}>)
+  target_link_libraries(openEMS OpenMP::OpenMP_CXX)
+endif()
 
 if (WIN32)
     # make sure "BUILD_OPENEMS_LIB" is only set for openEMS (dll) not openEMS_bin (exe)
