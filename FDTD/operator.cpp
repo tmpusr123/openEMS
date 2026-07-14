@@ -1059,6 +1059,12 @@ int Operator::CalcECOperator( DebugFlags debugFlags )
 	}
 
 	m_Exc->Reset(dT);
+	// CalcTimestep() (the min-stable-timestep search) + excitation reset. Split
+	// out from InitOperator: this used to be lumped into the "InitOperator" timer,
+	// but the min-timestep search is the real serial tall pole on large meshes.
+	if (_op_prof) { timeval _ti; gettimeofday(&_ti, NULL);
+		fprintf(stderr, "[PROF] operator CalcTimestep (min stable dt): %.2fs\n",
+		        (_ti.tv_sec-_op_t1.tv_sec)+1e-6*(_ti.tv_usec-_op_t1.tv_usec)); _op_t1=_ti; }
 
 	InitOperator();
 	if (_op_prof) { timeval _ti; gettimeofday(&_ti, NULL);
@@ -2022,65 +2028,78 @@ double Operator::CalcTimestep_Var3()
 	dT=1e200;
 	m_Used_TS_Name = string("Rennings_2");
 //	cout << "Operator::CalcTimestep(): Using timestep algorithm by Andreas Rennings, Dissertation @ University Duisburg-Essen, 2008, pp. 76, eq. 4.77 ff." << endl;
-	double newT;
-	unsigned int pos[3];
-	unsigned int smallest_pos[3] = {0, 0, 0};
-	unsigned int smallest_n = 0;
-	unsigned int ipos;
-	double w_total=0;
-	double wqp=0,wt1=0,wt2=0;
-	double wt_4[4]={0,0,0,0};
+	double dtmin=1e200;
 	MainOp->SetReflection2Cell();
+	const int tsNK = (int)numLines[2];
+	// Min-stable-timestep search -- the dominant serial startup cost on large
+	// meshes. Parallelized over z-planes. Each thread gets a private AdrOp cursor
+	// copy-constructed from MainOp (so it carries the same reflection state); the
+	// stateful SetPos/Shift/GetShiftedPos calls would otherwise race on the shared
+	// MainOp cursor. Every cell iteration is self-contained (ResetShift+SetPos at
+	// the top) and min() is order-independent in floating point, so dtmin is
+	// bit-identical to the serial scan. The smallest-position diagnostic (verbose
+	// level >1 only) is not tracked under the reduction.
 	for (int n=0; n<3; ++n)
 	{
 		int nP = (n+1)%3;
 		int nPP = (n+2)%3;
 
-		for (pos[2]=0; pos[2]<numLines[2]; ++pos[2])
+#ifdef _OPENMP
+		#pragma omp parallel reduction(min:dtmin)
+#endif
 		{
+		AdrOp lop(MainOp);
+		double newT, w_total, wqp, wt1, wt2;
+		double wt_4[4];
+		unsigned int ipos;
+		unsigned int pos[3];
+#ifdef _OPENMP
+		#pragma omp for schedule(static)
+#endif
+		for (int tsz=0; tsz<tsNK; ++tsz)
+		{
+			pos[2]=(unsigned int)tsz;
 			for (pos[1]=0; pos[1]<numLines[1]; ++pos[1])
 			{
 				for (pos[0]=0; pos[0]<numLines[0]; ++pos[0])
 				{
-					MainOp->ResetShift();
-					ipos = MainOp->SetPos(pos[0],pos[1],pos[2]);
-					wqp  = 1/(EC_L[nPP][ipos]*EC_C[n][MainOp->GetShiftedPos(nP ,1)]) + 1/(EC_L[nPP][ipos]*EC_C[n][ipos]);
-					wqp += 1/(EC_L[nP ][ipos]*EC_C[n][MainOp->GetShiftedPos(nPP,1)]) + 1/(EC_L[nP ][ipos]*EC_C[n][ipos]);
-					ipos = MainOp->Shift(nP,-1);
-					wqp += 1/(EC_L[nPP][ipos]*EC_C[n][MainOp->GetShiftedPos(nP ,1)]) + 1/(EC_L[nPP][ipos]*EC_C[n][ipos]);
-					ipos = MainOp->Shift(nPP,-1);
-					wqp += 1/(EC_L[nP ][ipos]*EC_C[n][MainOp->GetShiftedPos(nPP,1)]) + 1/(EC_L[nP ][ipos]*EC_C[n][ipos]);
+					lop.ResetShift();
+					ipos = lop.SetPos(pos[0],pos[1],pos[2]);
+					wqp  = 1/(EC_L[nPP][ipos]*EC_C[n][lop.GetShiftedPos(nP ,1)]) + 1/(EC_L[nPP][ipos]*EC_C[n][ipos]);
+					wqp += 1/(EC_L[nP ][ipos]*EC_C[n][lop.GetShiftedPos(nPP,1)]) + 1/(EC_L[nP ][ipos]*EC_C[n][ipos]);
+					ipos = lop.Shift(nP,-1);
+					wqp += 1/(EC_L[nPP][ipos]*EC_C[n][lop.GetShiftedPos(nP ,1)]) + 1/(EC_L[nPP][ipos]*EC_C[n][ipos]);
+					ipos = lop.Shift(nPP,-1);
+					wqp += 1/(EC_L[nP ][ipos]*EC_C[n][lop.GetShiftedPos(nPP,1)]) + 1/(EC_L[nP ][ipos]*EC_C[n][ipos]);
 
-					MainOp->ResetShift();
-					ipos = MainOp->SetPos(pos[0],pos[1],pos[2]);
-					wt_4[0] = 1/(EC_L[nPP][ipos]						  *EC_C[nP ][ipos]);
-					wt_4[1] = 1/(EC_L[nPP][MainOp->GetShiftedPos(nP ,-1)] *EC_C[nP ][ipos]);
-					wt_4[2] = 1/(EC_L[nP ][ipos]						  *EC_C[nPP][ipos]);
-					wt_4[3] = 1/(EC_L[nP ][MainOp->GetShiftedPos(nPP,-1)] *EC_C[nPP][ipos]);
+					lop.ResetShift();
+					ipos = lop.SetPos(pos[0],pos[1],pos[2]);
+					wt_4[0] = 1/(EC_L[nPP][ipos] *EC_C[nP ][ipos]);
+					wt_4[1] = 1/(EC_L[nPP][lop.GetShiftedPos(nP ,-1)] *EC_C[nP ][ipos]);
+					wt_4[2] = 1/(EC_L[nP ][ipos] *EC_C[nPP][ipos]);
+					wt_4[3] = 1/(EC_L[nP ][lop.GetShiftedPos(nPP,-1)] *EC_C[nPP][ipos]);
 
 					wt1 = wt_4[0]+wt_4[1]+wt_4[2]+wt_4[3] - 2*min(wt_4,4);
 
-					MainOp->ResetShift();
-					ipos = MainOp->SetPos(pos[0],pos[1],pos[2]);
-					wt_4[0] = 1/(EC_L[nPP][ipos]						  *EC_C[nP ][MainOp->GetShiftedPos(n,1)]);
-					wt_4[1] = 1/(EC_L[nPP][MainOp->GetShiftedPos(nP ,-1)] *EC_C[nP ][MainOp->GetShiftedPos(n,1)]);
-					wt_4[2] = 1/(EC_L[nP ][ipos]						  *EC_C[nPP][MainOp->GetShiftedPos(n,1)]);
-					wt_4[3] = 1/(EC_L[nP ][MainOp->GetShiftedPos(nPP,-1)] *EC_C[nPP][MainOp->GetShiftedPos(n,1)]);
+					lop.ResetShift();
+					ipos = lop.SetPos(pos[0],pos[1],pos[2]);
+					wt_4[0] = 1/(EC_L[nPP][ipos] *EC_C[nP ][lop.GetShiftedPos(n,1)]);
+					wt_4[1] = 1/(EC_L[nPP][lop.GetShiftedPos(nP ,-1)] *EC_C[nP ][lop.GetShiftedPos(n,1)]);
+					wt_4[2] = 1/(EC_L[nP ][ipos] *EC_C[nPP][lop.GetShiftedPos(n,1)]);
+					wt_4[3] = 1/(EC_L[nP ][lop.GetShiftedPos(nPP,-1)] *EC_C[nPP][lop.GetShiftedPos(n,1)]);
 
 					wt2 = wt_4[0]+wt_4[1]+wt_4[2]+wt_4[3] - 2*min(wt_4,4);
 
 					w_total = wqp + wt1 + wt2;
 					newT = 2/sqrt( w_total );
-					if ((newT<dT) && (newT>0.0))
-					{
-						dT=newT;
-						smallest_pos[0]=pos[0];smallest_pos[1]=pos[1];smallest_pos[2]=pos[2];
-						smallest_n = n;
-					}
+					if ((newT<dtmin) && (newT>0.0))
+						dtmin=newT;
 				}
 			}
 		}
+		}
 	}
+	dT = dtmin;
 	if (dT==0)
 	{
 		cerr << "Operator::CalcTimestep: Timestep is zero... this is not supposed to happen!!! exit!" << endl;
@@ -2088,7 +2107,7 @@ double Operator::CalcTimestep_Var3()
 	}
 	if (g_settings.GetVerboseLevel()>1)
 	{
-		cout << "Operator::CalcTimestep_Var3: Smallest timestep (" << dT << "s) found at position: " <<  smallest_n << " : " << smallest_pos[0] << ";" <<  smallest_pos[1] << ";" <<  smallest_pos[2] << endl;
+		cout << "Operator::CalcTimestep_Var3: Smallest timestep (" << dT << "s) found." << endl;
 	}
 	return 0;
 }
