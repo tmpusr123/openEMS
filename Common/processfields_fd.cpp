@@ -22,6 +22,7 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <cstdlib>
 
 using namespace std;
 
@@ -53,7 +54,14 @@ void ProcessFieldsFD::InitProcess()
 	ProcessFields::InitProcess();
 
 	if (m_Vtk_Dump_File)
+	{
 		m_Vtk_Dump_File->SetHeader(string("openEMS FD Field Dump -- Interpolation: ")+m_Eng_Interface->GetInterpolationTypeString());
+		// FD dumps write their whole batch of phase/abs/arg frames at PostProcess
+		// (once, at end of run) rather than per-timestep, but for many frequencies
+		// that batch of compressed VTK writes is still a real shutdown cost, so
+		// honor the same escape hatch as the TD path.
+		if (getenv("OPENEMS_VTK_NOCOMPRESS")) m_Vtk_Dump_File->SetCompress(false);
+	}
 
 	if (m_HDF5_Dump_File)
 	{
@@ -81,22 +89,31 @@ int ProcessFieldsFD::Process()
 	std::complex<float>**** field_fd = NULL;
 
 	double T = m_Eng_Interface->GetTime(m_dualTime);
-	unsigned int pos[3];
+	const int NI = (int)numLines[0];
 	for (size_t n = 0; n<m_FD_Samples.size(); ++n)
 	{
 		std::complex<float> exp_jwt_2_dt = std::exp( (std::complex<float>)(-2.0 * _I * M_PI * m_FD_Samples.at(n) * T) );
 		exp_jwt_2_dt *= 2; // *2 for single-sided spectrum
 		exp_jwt_2_dt *= Op->GetTimestep() * m_FD_Interval; // multiply with timestep-interval
 		field_fd = m_FD_Fields.at(n);
-		for (pos[0]=0; pos[0]<numLines[0]; ++pos[0])
+		// Running-DFT accumulation is the dominant per-sample FD cost once the
+		// interpolation (CalcField) is GPU/OpenMP-accelerated. Parallelize over
+		// x-planes: each cell owns its running sum and the writes are disjoint,
+		// so the result is bit-identical to the serial loop -- the per-cell
+		// temporal accumulation order is unchanged (Process() is still invoked
+		// once per sample, in timestep order).
+#ifdef _OPENMP
+		#pragma omp parallel for schedule(static)
+#endif
+		for (int x=0; x<NI; ++x)
 		{
-			for (pos[1]=0; pos[1]<numLines[1]; ++pos[1])
+			for (unsigned int y=0; y<numLines[1]; ++y)
 			{
-				for (pos[2]=0; pos[2]<numLines[2]; ++pos[2])
+				for (unsigned int z=0; z<numLines[2]; ++z)
 				{
-					field_fd[0][pos[0]][pos[1]][pos[2]] += field_td[0][pos[0]][pos[1]][pos[2]] * exp_jwt_2_dt;
-					field_fd[1][pos[0]][pos[1]][pos[2]] += field_td[1][pos[0]][pos[1]][pos[2]] * exp_jwt_2_dt;
-					field_fd[2][pos[0]][pos[1]][pos[2]] += field_td[2][pos[0]][pos[1]][pos[2]] * exp_jwt_2_dt;
+					field_fd[0][x][y][z] += field_td[0][x][y][z] * exp_jwt_2_dt;
+					field_fd[1][x][y][z] += field_td[1][x][y][z] * exp_jwt_2_dt;
+					field_fd[2][x][y][z] += field_td[2][x][y][z] * exp_jwt_2_dt;
 				}
 			}
 		}

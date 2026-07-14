@@ -223,12 +223,30 @@ if (WITH_CUDA)
   INCLUDE_DIRECTORIES(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 endif()
 
-# OpenMP parallelizes the host-side field-monitor extraction
-# (Common/processfields.cpp CalcField) -- the dominant cost of E/H/RotH dumps
-# on the fast engines. C++ only; nvcc-compiled files are unaffected.
-find_package(OpenMP QUIET)
+# OpenMP parallelizes both the operator build (Operator::Calc_EC /
+# CalcECOperator / parallel first-touch allocation) and the host-side field-
+# monitor extraction (Common/processfields.cpp CalcField, processfields_fd.cpp
+# DFT accumulation) -- the serial tall poles of startup and of field dumps on the
+# fast (CUDA) engines. C++ only; nvcc-compiled files are unaffected. Because the
+# speedups are gated on _OPENMP, a build without it is silently single-threaded
+# (minutes at "Create FDTD operator" on large meshes), so verify loudly: a hard
+# error for the CUDA path (where it matters most) and a warning otherwise.
+find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
-  message(STATUS "OpenMP found -- parallel field-dump extraction enabled")
+  message(STATUS "OpenMP found -- parallel operator build + field-dump extraction enabled")
+elseif(WITH_CUDA)
+  message(FATAL_ERROR
+    "OpenMP not found, but the CUDA engine relies on it to parallelize the "
+    "operator build (Calc_EC / CalcECOperator / first-touch allocation) and "
+    "field-dump extraction. Without OpenMP, 'Create FDTD operator' runs on a "
+    "single core and can take minutes on large meshes. Install OpenMP support "
+    "(e.g. libomp / a GCC with -fopenmp), or configure with -DWITH_CUDA=OFF to "
+    "bypass this check.")
+else()
+  message(WARNING
+    "OpenMP not found -- the operator build and field-dump extraction will run "
+    "single-threaded (slow startup on large meshes). Install OpenMP support to "
+    "enable multi-threaded setup.")
 endif()
 
 TARGET_LINK_LIBRARIES( openEMS

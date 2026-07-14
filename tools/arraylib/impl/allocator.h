@@ -19,10 +19,24 @@
 #define ARRAYLIB_ALLOCATOR_H
 
 #include <cstddef>
+#include <cstring>
 #include <cmath>
+#include <new>
+#include <type_traits>
 
 namespace ArrayLib
 {
+	// Parallel first-touch zero-fill. Large operator/engine arrays (hundreds of
+	// MB each) are otherwise memset by a single core, so on multi-socket / multi-
+	// channel machines they fault in against one memory controller -- one of the
+	// serial tall poles of "Create FDTD operator". Splitting the fill across
+	// threads both uses every controller's bandwidth and NUMA-places each page on
+	// the node that first touches it. Defined ONCE (FDTD/operator.cpp, an OpenMP
+	// TU); the pragma is kept out of this header so the template body below is
+	// byte-identical whether instantiated by a .cpp (-fopenmp) or a .cu (nvcc,
+	// no -fopenmp) TU -- otherwise the two definitions would be an ODR violation.
+	void parallel_zero(void* buf, size_t nbytes);
+
 	template <typename T>
 	class SimpleAllocator;
 
@@ -81,9 +95,20 @@ public:
 			throw std::bad_alloc();
 		}
 #endif
-		memset(buf, 0, numelem * sizeof(T));
-		for (size_t i = 0; i < numelem; i++)
-			new (buf + i) T();
+		// For a trivially-default-constructible T, value-initialization (what the
+		// placement-new loop below performs) is exactly zero-initialization, so a
+		// single zero-fill is equivalent -- do it as a parallel first-touch and
+		// skip the per-element loop entirely. Non-trivial T still gets the loop.
+		if (std::is_trivially_default_constructible<T>::value)
+		{
+			ArrayLib::parallel_zero(buf, numelem * sizeof(T));
+		}
+		else
+		{
+			memset(buf, 0, numelem * sizeof(T));
+			for (size_t i = 0; i < numelem; i++)
+				new (buf + i) T();
+		}
 
 		return buf;
 	}
@@ -92,8 +117,9 @@ public:
 	{
 		if (ptr)
 		{
-			for (size_t i = 0; i < numelem; i++)
-				(&ptr[i])->~T();
+			if (!std::is_trivially_destructible<T>::value)
+				for (size_t i = 0; i < numelem; i++)
+					(&ptr[i])->~T();
 #ifdef WIN32
 			_mm_free(ptr);
 #else

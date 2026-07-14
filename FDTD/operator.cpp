@@ -17,8 +17,13 @@
 
 #include <fstream>
 #include <algorithm>
+#include <cstring>
 #include <sys/time.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include "operator.h"
+#include "tools/arraylib/impl/allocator.h"
 #include "engine.h"
 #include "extensions/operator_extension.h"
 #include "extensions/operator_ext_excitation.h"
@@ -37,6 +42,40 @@
 
 #include "CSPropMaterial.h"
 #include "CSPropLumpedElement.h"
+
+// Single definition of the parallel first-touch zero-fill declared in
+// tools/arraylib/impl/allocator.h. Kept here (an OpenMP-compiled TU) rather than
+// in the header so the OpenMP pragma exists in exactly one place -- see the
+// declaration comment for the ODR reasoning across .cpp/.cu instantiations.
+namespace ArrayLib
+{
+	void parallel_zero(void* buf, size_t nbytes)
+	{
+#ifdef _OPENMP
+		// Below ~1 MiB the thread fan-out costs more than it saves; also avoids
+		// spawning a team when called for the many tiny arrays.
+		if (nbytes < (1u<<20)) { memset(buf, 0, nbytes); return; }
+		char* p = static_cast<char*>(buf);
+		#pragma omp parallel
+		{
+			const size_t PAGE = 4096;
+			int nt  = omp_get_num_threads();
+			int tid = omp_get_thread_num();
+			// page-aligned, contiguous per-thread spans -> clean first-touch
+			size_t chunk = ((nbytes + nt - 1) / nt + PAGE - 1) / PAGE * PAGE;
+			size_t start = (size_t)tid * chunk;
+			if (start < nbytes)
+			{
+				size_t len = chunk;
+				if (start + len > nbytes) len = nbytes - start;
+				memset(p + start, 0, len);
+			}
+		}
+#else
+		memset(buf, 0, nbytes);
+#endif
+	}
+}
 
 Operator* Operator::New()
 {
@@ -1038,7 +1077,9 @@ int Operator::CalcECOperator( DebugFlags debugFlags )
 	for (int n=0; n<3; ++n)
 	{
 #ifdef _OPENMP
-		#pragma omp parallel for schedule(dynamic,1)
+		// Uniform per-x arithmetic cost (unlike Calc_EC's geometry-dependent
+		// cost), so static scheduling avoids the dynamic dispatch overhead.
+		#pragma omp parallel for schedule(static)
 #endif
 		for (int x=0; x<_nx; ++x)
 		{
