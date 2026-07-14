@@ -56,7 +56,10 @@ void ProcessFieldsTD::InitProcess()
 	ProcessFields::InitProcess();
 
 	if (m_Vtk_Dump_File)
+	{
 		m_Vtk_Dump_File->SetHeader(string("openEMS TD Field Dump -- Interpolation: ")+m_Eng_Interface->GetInterpolationTypeString());
+		if (getenv("OPENEMS_VTK_NOCOMPRESS")) m_Vtk_Dump_File->SetCompress(false);
+	}
 
 	if (m_HDF5_Dump_File)
 		m_HDF5_Dump_File->SetCurrentGroup("/FieldData/TD");

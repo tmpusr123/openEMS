@@ -17,6 +17,7 @@
 
 #include <fstream>
 #include <algorithm>
+#include <sys/time.h>
 #include "operator.h"
 #include "engine.h"
 #include "extensions/operator_extension.h"
@@ -979,11 +980,16 @@ void Operator::Calc_ECOperatorPos(int n, unsigned int* pos)
 
 int Operator::CalcECOperator( DebugFlags debugFlags )
 {
+	timeval _op_t0, _op_t1, _op_t2; bool _op_prof = getenv("OPENEMS_PROF");
+	if (_op_prof) gettimeofday(&_op_t0, NULL);
 	Init_EC();
 	InitDataStorage();
 
 	if (Calc_EC()==0)
 		return -1;
+	if (_op_prof) { gettimeofday(&_op_t1, NULL);
+		fprintf(stderr, "[PROF] operator Calc_EC (material/geometry per cell): %.2fs\n",
+		        (_op_t1.tv_sec-_op_t0.tv_sec)+1e-6*(_op_t1.tv_usec-_op_t0.tv_usec)); }
 
 	m_InvaildTimestep = false;
 	opt_dT = 0;
@@ -1016,22 +1022,64 @@ int Operator::CalcECOperator( DebugFlags debugFlags )
 	m_Exc->Reset(dT);
 
 	InitOperator();
+	if (_op_prof) { timeval _ti; gettimeofday(&_ti, NULL);
+		fprintf(stderr, "[PROF] operator InitOperator (alloc vv/vi/ii/iv): %.2fs\n",
+		        (_ti.tv_sec-_op_t1.tv_sec)+1e-6*(_ti.tv_usec-_op_t1.tv_usec)); _op_t1=_ti; }
 
-	unsigned int pos[3];
-
+	// Convert the per-cell EC_* material coefficients into the vv/vi/ii/iv update
+	// operators. This is parallelized over x-planes: the index is read with the
+	// (stateless, cursor-at-origin) MainOp->GetPos -- the same call Calc_EC_Range
+	// uses concurrently -- instead of the cursor-mutating SetPos in
+	// Calc_ECOperatorPos, and SetVV/SetVI/SetII/SetIV write disjoint cells. This
+	// is a hot single-threaded setup cost on large meshes; the math mirrors
+	// Calc_ECOperatorPos exactly (kept for the lumped-element recompute path).
+	MainOp->SetPos(0,0,0);
+	int _nx = (int)numLines[0];
 	for (int n=0; n<3; ++n)
 	{
-		for (pos[0]=0; pos[0]<numLines[0]; ++pos[0])
+#ifdef _OPENMP
+		#pragma omp parallel for schedule(dynamic,1)
+#endif
+		for (int x=0; x<_nx; ++x)
 		{
+			unsigned int pos[3]; pos[0]=(unsigned int)x;
 			for (pos[1]=0; pos[1]<numLines[1]; ++pos[1])
 			{
 				for (pos[2]=0; pos[2]<numLines[2]; ++pos[2])
 				{
-					Calc_ECOperatorPos(n,pos);
+					unsigned int i = MainOp->GetPos(pos[0],pos[1],pos[2]);
+					double C = EC_C[n][i];
+					double G = EC_G[n][i];
+					if (C>0)
+					{
+						SetVV(n,pos[0],pos[1],pos[2], (1.0-dT*G/2.0/C)/(1.0+dT*G/2.0/C) );
+						SetVI(n,pos[0],pos[1],pos[2], (dT/C)/(1.0+dT*G/2.0/C) );
+					}
+					else
+					{
+						SetVV(n,pos[0],pos[1],pos[2], 0 );
+						SetVI(n,pos[0],pos[1],pos[2], 0 );
+					}
+					double L = EC_L[n][i];
+					double R = EC_R[n][i];
+					if (L>0)
+					{
+						SetII(n,pos[0],pos[1],pos[2], (1.0-dT*R/2.0/L)/(1.0+dT*R/2.0/L) );
+						SetIV(n,pos[0],pos[1],pos[2], (dT/L)/(1.0+dT*R/2.0/L) );
+					}
+					else
+					{
+						SetII(n,pos[0],pos[1],pos[2], 0 );
+						SetIV(n,pos[0],pos[1],pos[2], 0 );
+					}
 				}
 			}
 		}
 	}
+
+	if (_op_prof) { gettimeofday(&_op_t2, NULL);
+		fprintf(stderr, "[PROF] operator CalcECOperator cell loop (vv/vi/ii/iv): %.2fs\n",
+		        (_op_t2.tv_sec-_op_t1.tv_sec)+1e-6*(_op_t2.tv_usec-_op_t1.tv_usec)); }
 
 	//Apply PEC to all boundary's
 	bool PEC[6]={1,1,1,1,1,1};
@@ -1772,9 +1820,24 @@ bool Operator::Calc_EC()
 		cerr << "CartOperator::Calc_EC: CSX not given or invalid!!!" << endl;
 		return false;
 	}
-	
+
 	MainOp->SetPos(0,0,0);
+	// Per-cell material/geometry evaluation is the dominant setup cost on large
+	// meshes and is embarrassingly parallel over x-planes: Calc_EC_Range writes
+	// disjoint EC_* entries per x and only reads the (const) geometry via
+	// GetPrimitivesBoundBox/GetPos -- exactly the split Operator_Multithread
+	// already runs across threads, so it is safe to parallelize here for the
+	// operators (e.g. CUDA) that use this base implementation. The
+	// Operator_Multithread subclass overrides Calc_EC(), so its path is
+	// unaffected by this OpenMP loop.
+#ifdef _OPENMP
+	int nx = (int)numLines[0];
+	#pragma omp parallel for schedule(dynamic,1)
+	for (int x=0; x<nx; ++x)
+		Calc_EC_Range((unsigned int)x, (unsigned int)x);
+#else
 	Calc_EC_Range(0,numLines[0]-1);
+#endif
 	return true;
 }
 
