@@ -18,6 +18,7 @@
 #ifndef OPERATOR_H
 #define OPERATOR_H
 
+#include <set>
 #include "tools/AdrOp.h"
 #include "tools/constants.h"
 #include "excitation.h"
@@ -291,6 +292,23 @@ protected:
 
 	virtual bool AverageMatCellCenter(int ny, const unsigned int* pos, double* EffMat, vector<CSPrimitives*> vPrims) const;
 	virtual bool AverageMatQuarterCell(int ny, const unsigned int* pos, double* EffMat, vector<CSPrimitives*> vPrims) const;
+
+	//! Bit-identical fast path of AverageMatQuarterCell for a cell fully inside a
+	//! single uniform material: same area/length weighting, constant material
+	//! substituted for the 6 (per ny) geometry queries. \sa ClassifyUniformCell
+	void AverageMatQuarterCell_Uniform(int ny, const unsigned int* pos, double* EffMat,
+	                                   double eps, double kappa, double mue, double sigma) const;
+	//! Classify a cell for the fast path: 0=not uniform (do full averaging),
+	//! 1=uniform material (*outProp set), 2=uniform background. Cheap: AABB tests
+	//! over the (priority-sorted) vPrims, no per-sample point-in-primitive queries.
+	int ClassifyUniformCell(const unsigned int* pos, const vector<CSPrimitives*>& vPrims, CSProperties** outProp) const;
+	//! Build m_SimpleMat: the material properties that are non-graded and
+	//! non-dispersive (so the fast path applies). Call once before Calc_EC.
+	void BuildSimpleMaterialSet();
+	std::set<CSProperties*> m_SimpleMat;         //!< materials eligible for the fast path
+	bool m_MatFastPath = true;                   //!< enable fast path (OPENEMS_NO_FASTMAT disables)
+	bool m_MatFastProf = false;                  //!< count fast-path hits (OPENEMS_PROF)
+	mutable size_t m_MatFast_hit = 0, m_MatFast_tot = 0;
 
 	//! Calc operator at certain \a pos
 	virtual void Calc_ECOperatorPos(int n, unsigned int* pos);

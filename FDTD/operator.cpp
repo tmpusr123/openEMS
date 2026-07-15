@@ -1032,6 +1032,14 @@ int Operator::CalcECOperator( DebugFlags debugFlags )
 #else
 	if (_op_prof) fprintf(stderr, "[PROF] operator build: OpenMP DISABLED at compile time -- serial build!\n");
 #endif
+	// Homogeneous-interior-cell fast path for material averaging (skips the per-cell
+	// sub-cell geometry sampling deep inside a uniform dielectric). Enabled by
+	// default; OPENEMS_NO_FASTMAT=1 forces the full averaging everywhere.
+	m_MatFastPath = (getenv("OPENEMS_NO_FASTMAT")==NULL);
+	m_MatFastProf = _op_prof;
+	m_MatFast_hit = m_MatFast_tot = 0;
+	if (m_MatFastPath) BuildSimpleMaterialSet();
+
 	Init_EC();
 	InitDataStorage();
 
@@ -1039,7 +1047,10 @@ int Operator::CalcECOperator( DebugFlags debugFlags )
 		return -1;
 	if (_op_prof) { gettimeofday(&_op_t1, NULL);
 		fprintf(stderr, "[PROF] operator Calc_EC (material/geometry per cell): %.2fs\n",
-		        (_op_t1.tv_sec-_op_t0.tv_sec)+1e-6*(_op_t1.tv_usec-_op_t0.tv_usec)); }
+		        (_op_t1.tv_sec-_op_t0.tv_sec)+1e-6*(_op_t1.tv_usec-_op_t0.tv_usec));
+		if (m_MatFastPath && m_MatFast_tot)
+			fprintf(stderr, "[PROF] operator material fast-path: %.1f%% of cells (%zu/%zu), %zu uniform mats\n",
+			        100.0*m_MatFast_hit/m_MatFast_tot, m_MatFast_hit, m_MatFast_tot, m_SimpleMat.size()); }
 
 	m_InvaildTimestep = false;
 	opt_dT = 0;
@@ -1646,12 +1657,176 @@ bool Operator::AverageMatQuarterCell(int ny, const unsigned int* pos, double* Ef
 	return true;
 }
 
+void Operator::AverageMatQuarterCell_Uniform(int ny, const unsigned int* pos, double* EffMat,
+                                             double eps, double kappa, double mue, double sigma) const
+{
+	// Every GetMaterial sample in AverageMatQuarterCell would return the constant
+	// (eps,kappa,mue,sigma) for a cell fully inside one uniform material, so
+	// substitute it and reproduce the EXACT same area/length weighting -> the
+	// result is bit-identical, but the 6 per-ny geometry queries are skipped. The
+	// GetNodeArea/GetNodeWidth weights are cheap mesh-metric lookups and kept.
+	int n=ny;
+	int nP = (n+1)%3;
+	int nPP = (n+2)%3;
+	int loc_pos[3] = {(int)pos[0],(int)pos[1],(int)pos[2]};
+	double A_n;
+	double area = 0;
+
+	//******************************* epsilon,kappa averaging *****************************//
+	A_n = GetNodeArea(ny,loc_pos,true);                              //up-right
+	EffMat[0] = eps*A_n;   EffMat[1] = kappa*A_n;   area+=A_n;
+	--loc_pos[nP];                                                   //up-left
+	A_n = GetNodeArea(ny,loc_pos,true);
+	EffMat[0] += eps*A_n;  EffMat[1] += kappa*A_n;  area+=A_n;
+	++loc_pos[nP]; --loc_pos[nPP];                                   //down-right
+	A_n = GetNodeArea(ny,loc_pos,true);
+	EffMat[0] += eps*A_n;  EffMat[1] += kappa*A_n;  area+=A_n;
+	--loc_pos[nP];                                                   //down-left
+	A_n = GetNodeArea(ny,loc_pos,true);
+	EffMat[0] += eps*A_n;  EffMat[1] += kappa*A_n;  area+=A_n;
+
+	EffMat[0]*=__EPS0__/area;
+	EffMat[1]/=area;
+
+	//******************************* mu,sigma averaging *****************************//
+	loc_pos[0]=pos[0]; loc_pos[1]=pos[1]; loc_pos[2]=pos[2];
+	double length=0;
+
+	--loc_pos[n];                                                    //shift down
+	double delta_ny = GetNodeWidth(n,loc_pos,true);
+	EffMat[2] = delta_ny / mue;
+	if (sigma) EffMat[3] = delta_ny / sigma; else EffMat[3] = 0;
+	length=delta_ny;
+
+	++loc_pos[n];                                                    //shift up
+	delta_ny = GetNodeWidth(n,loc_pos,true);
+	EffMat[2] += delta_ny / mue;
+	if (sigma) EffMat[3] += delta_ny / sigma; else EffMat[3] = 0;
+	length+=delta_ny;
+
+	EffMat[2] = length * __MUE0__ / EffMat[2];
+	if (EffMat[3]) EffMat[3]=length / EffMat[3];
+}
+
+void Operator::BuildSimpleMaterialSet()
+{
+	m_SimpleMat.clear();
+	if (CSX==NULL) return;
+	vector<CSProperties*> vMats = CSX->GetPropertyByType(CSProperties::MATERIAL);
+	for (size_t i=0; i<vMats.size(); ++i)
+	{
+		CSProperties* prop = vMats.at(i);
+		// pure, non-dispersive material only (exact MATERIAL type -- excludes
+		// dispersive/Lorentz/Debye/conducting-sheet/discrete subtypes)
+		if (prop->GetType() != CSProperties::MATERIAL) continue;
+		CSPropMaterial* mat = dynamic_cast<CSPropMaterial*>(prop);
+		if (!mat) continue;
+		// non-graded: no spatial weighting function on any component/direction
+		bool graded=false;
+		for (int ny=0; ny<3 && !graded; ++ny)
+			if (!mat->GetEpsilonWeightFunction(ny).empty() ||
+			    !mat->GetMueWeightFunction(ny).empty()     ||
+			    !mat->GetKappaWeightFunction(ny).empty()   ||
+			    !mat->GetSigmaWeightFunction(ny).empty())
+				graded=true;
+		if (!graded)
+			m_SimpleMat.insert(prop);
+	}
+}
+
+int Operator::ClassifyUniformCell(const unsigned int* pos, const vector<CSPrimitives*>& vPrims, CSProperties** outProp) const
+{
+	// Region spanned by ALL quarter-/half-cell sample points of AverageMatQuarterCell
+	// (identical for every ny): [coord - 0.25*delta_M, coord + 0.5*delta] per axis.
+	// GetRawDiscDelta returns a mirrored (negative) delta at the mesh edge, so take
+	// min/max to keep R well-formed -- such boundary cells then fail containment.
+	double Rmin[3], Rmax[3];
+	for (int d=0; d<3; ++d)
+	{
+		double c  = discLines[d][pos[d]];
+		double lo = c - 0.25*GetRawDiscDelta(d, (int)pos[d]-1);
+		double hi = c + 0.5 *GetRawDiscDelta(d, (int)pos[d]);
+		Rmin[d] = lo<hi ? lo : hi;
+		Rmax[d] = lo<hi ? hi : lo;
+	}
+
+	// vPrims is priority-sorted (highest first). The first primitive whose AABB
+	// touches R decides the material over R: if it is a box that STRICTLY contains
+	// R, it wins at every sample point -> uniform. Otherwise R straddles a boundary
+	// (or an unbounded/non-box primitive intrudes) -> not provably uniform.
+	for (size_t i=0; i<vPrims.size(); ++i)
+	{
+		CSPrimitives* P = vPrims[i];
+		double bb[6];
+		if (!P->GetBoundBox(bb))
+			return 0;   // cannot bound this primitive's extent -> unsafe, full averaging
+		bool touches = (bb[0]<=Rmax[0] && bb[1]>=Rmin[0] &&
+		                bb[2]<=Rmax[1] && bb[3]>=Rmin[1] &&
+		                bb[4]<=Rmax[2] && bb[5]>=Rmin[2]);
+		if (!touches)
+			continue;   // this (higher-priority) primitive does not reach R
+		// highest-priority primitive reaching R:
+		if (P->GetType() != CSPrimitives::BOX)
+			return 0;   // non-box intrudes -> can't prove uniform (conservative)
+		bool contains = (bb[0]<Rmin[0] && bb[1]>Rmax[0] &&
+		                 bb[2]<Rmin[1] && bb[3]>Rmax[1] &&
+		                 bb[4]<Rmin[2] && bb[5]>Rmax[2]);   // strict -> excludes surface cells
+		if (!contains)
+			return 0;   // R crosses this box's boundary -> mixed material
+		CSProperties* prop = P->GetProperty();
+		if (!prop || !m_SimpleMat.count(prop))
+			return 0;   // not a proven-uniform (non-graded, non-dispersive) material
+		*outProp = prop;
+		return 1;
+	}
+	// no material primitive reaches R -> cell is pure background (always uniform)
+	return 2;
+}
+
 bool Operator::Calc_EffMatPos(int ny, const unsigned int* pos, double* EffMat, vector<CSPrimitives *> vPrims) const
 {
 	switch (m_MatAverageMethod)
 	{
 	case QuarterCell:
+	{
+		if (m_MatFastPath)
+		{
+			CSProperties* up=NULL;
+			int uc = ClassifyUniformCell(pos, vPrims, &up);
+			if (m_MatFastProf)
+			{
+				#pragma omp atomic
+				++m_MatFast_tot;
+				if (uc) {
+					#pragma omp atomic
+					++m_MatFast_hit;
+				}
+			}
+			if (uc)
+			{
+				double eps,kap,mue,sig;
+				if (uc==1)
+				{
+					CSPropMaterial* m = static_cast<CSPropMaterial*>(up);
+					double c[3] = {discLines[0][pos[0]], discLines[1][pos[1]], discLines[2][pos[2]]};
+					eps = m->GetEpsilonWeighted(ny,c);
+					kap = m->GetKappaWeighted(ny,c);
+					mue = m->GetMueWeighted(ny,c);
+					sig = m->GetSigmaWeighted(ny,c);
+				}
+				else   // uniform background
+				{
+					eps = GetBackgroundEpsR();
+					kap = GetBackgroundKappa();
+					mue = GetBackgroundMueR();
+					sig = GetBackgroundSigma();
+				}
+				AverageMatQuarterCell_Uniform(ny, pos, EffMat, eps, kap, mue, sig);
+				return true;
+			}
+		}
 		return AverageMatQuarterCell(ny, pos, EffMat, vPrims);
+	}
 	case CentralCell:
 		return AverageMatCellCenter(ny, pos, EffMat, vPrims);
 	default:
