@@ -1038,6 +1038,7 @@ int Operator::CalcECOperator( DebugFlags debugFlags )
 	m_MatFastPath = (getenv("OPENEMS_NO_FASTMAT")==NULL);
 	m_MatFastProf = _op_prof;
 	m_MatFast_hit = m_MatFast_tot = 0;
+	++m_MatClassGen;   // new build -> stale per-cell classification memos self-invalidate
 	if (m_MatFastPath) BuildSimpleMaterialSet();
 
 	Init_EC();
@@ -1797,11 +1798,15 @@ bool Operator::Calc_EffMatPos(int ny, const unsigned int* pos, double* EffMat, v
 			// cell instead of 3x. (Only the constant material values below are
 			// re-fetched per ny, to keep anisotropy exact.)
 			static thread_local unsigned int c_pos[3] = {~0u, ~0u, ~0u};
+			static thread_local unsigned int c_gen = 0;
 			static thread_local int c_uc = -1;
 			static thread_local CSProperties* c_up = NULL;
 			CSProperties* up;
 			int uc;
-			if (c_uc>=0 && c_pos[0]==pos[0] && c_pos[1]==pos[1] && c_pos[2]==pos[2])
+			// reuse only within the same build (m_MatClassGen) AND same cell -- the
+			// generation stamp makes cross-build staleness impossible by construction,
+			// independent of the OpenMP schedule.
+			if (c_uc>=0 && c_gen==m_MatClassGen && c_pos[0]==pos[0] && c_pos[1]==pos[1] && c_pos[2]==pos[2])
 			{
 				uc = c_uc; up = c_up;                 // reuse this cell's ny=0 result
 			}
@@ -1809,7 +1814,7 @@ bool Operator::Calc_EffMatPos(int ny, const unsigned int* pos, double* EffMat, v
 			{
 				up = NULL;
 				uc = ClassifyUniformCell(pos, vPrims, &up);
-				c_pos[0]=pos[0]; c_pos[1]=pos[1]; c_pos[2]=pos[2]; c_uc=uc; c_up=up;
+				c_pos[0]=pos[0]; c_pos[1]=pos[1]; c_pos[2]=pos[2]; c_uc=uc; c_up=up; c_gen=m_MatClassGen;
 				if (m_MatFastProf)
 				{
 					#pragma omp atomic

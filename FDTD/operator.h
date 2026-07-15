@@ -309,6 +309,7 @@ protected:
 	bool m_MatFastPath = true;                   //!< enable fast path (OPENEMS_NO_FASTMAT disables)
 	bool m_MatFastProf = false;                  //!< count fast-path hits (OPENEMS_PROF)
 	mutable size_t m_MatFast_hit = 0, m_MatFast_tot = 0;
+	unsigned int m_MatClassGen = 0;              //!< bumped per operator build; invalidates the per-cell classification memo across builds in one process
 
 	//! Calc operator at certain \a pos
 	virtual void Calc_ECOperatorPos(int n, unsigned int* pos);
