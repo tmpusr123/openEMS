@@ -1021,6 +1021,17 @@ int Operator::CalcECOperator( DebugFlags debugFlags )
 {
 	timeval _op_t0, _op_t1, _op_t2; bool _op_prof = getenv("OPENEMS_PROF");
 	if (_op_prof) gettimeofday(&_op_t0, NULL);
+#ifdef _OPENMP
+	// Report the thread budget the parallel build actually gets. If max-threads
+	// is far below num-procs, OMP_NUM_THREADS is capping it (unset it); if both
+	// are small on a big instance, the process is CPU-limited (e.g. a container /
+	// cgroup) -- give it more cores. This is the difference between Calc_EC taking
+	// ~2s and ~16s on a 40M-cell mesh.
+	if (_op_prof) fprintf(stderr, "[PROF] operator build: OpenMP max threads = %d (num procs = %d)\n",
+	                      omp_get_max_threads(), omp_get_num_procs());
+#else
+	if (_op_prof) fprintf(stderr, "[PROF] operator build: OpenMP DISABLED at compile time -- serial build!\n");
+#endif
 	Init_EC();
 	InitDataStorage();
 
@@ -1144,6 +1155,10 @@ int Operator::CalcECOperator( DebugFlags debugFlags )
 	for (int n=0; n<6; ++n)
 		PMC[n] = m_BC[n]==1;
 	ApplyMagneticBC(PMC);
+
+	if (_op_prof) { timeval _tp; gettimeofday(&_tp, NULL);
+		fprintf(stderr, "[PROF] operator CalcPEC + BC + lumped: %.2fs\n",
+		        (_tp.tv_sec-_op_t2.tv_sec)+1e-6*(_tp.tv_usec-_op_t2.tv_usec)); }
 
 	//all information available for extension... create now...
 	for (size_t n=0; n<m_Op_exts.size(); ++n)
@@ -2118,7 +2133,27 @@ bool Operator::CalcPEC()
 	m_Nr_PEC[1]=0;
 	m_Nr_PEC[2]=0;
 
+	// Metal/PEC detection is a per-cell geometry query (GetPrimitivesBoundBox +
+	// GetPropertyByCoordPriority) -- as expensive as Calc_EC and, like it,
+	// embarrassingly parallel over x-planes (CalcPEC_Range writes disjoint cells
+	// per x). Operator_Multithread overrides CalcPEC() with its own boost-thread
+	// version, so this OpenMP path only runs for operators (e.g. CUDA) using this
+	// base implementation -- no nested parallelism. Bit-identical: the PEC counts
+	// are summed via reduction.
+#ifdef _OPENMP
+	int nx = (int)numLines[0];
+	unsigned int pec0=0, pec1=0, pec2=0;
+	#pragma omp parallel for schedule(dynamic,1) reduction(+:pec0,pec1,pec2)
+	for (int x=0; x<nx; ++x)
+	{
+		unsigned int cnt[3]={0,0,0};
+		CalcPEC_Range((unsigned int)x,(unsigned int)x,cnt);
+		pec0+=cnt[0]; pec1+=cnt[1]; pec2+=cnt[2];
+	}
+	m_Nr_PEC[0]=pec0; m_Nr_PEC[1]=pec1; m_Nr_PEC[2]=pec2;
+#else
 	CalcPEC_Range(0,numLines[0]-1,m_Nr_PEC);
+#endif
 
 	CalcPEC_Curves();
 
