@@ -1791,15 +1791,33 @@ bool Operator::Calc_EffMatPos(int ny, const unsigned int* pos, double* EffMat, v
 	{
 		if (m_MatFastPath)
 		{
-			CSProperties* up=NULL;
-			int uc = ClassifyUniformCell(pos, vPrims, &up);
-			if (m_MatFastProf)
+			// R and the primitive classification are ny-independent, and this is
+			// called ny=0,1,2 back-to-back for each cell, so memoize per thread and
+			// reuse across the three directions -- classify (and count) once per
+			// cell instead of 3x. (Only the constant material values below are
+			// re-fetched per ny, to keep anisotropy exact.)
+			static thread_local unsigned int c_pos[3] = {~0u, ~0u, ~0u};
+			static thread_local int c_uc = -1;
+			static thread_local CSProperties* c_up = NULL;
+			CSProperties* up;
+			int uc;
+			if (c_uc>=0 && c_pos[0]==pos[0] && c_pos[1]==pos[1] && c_pos[2]==pos[2])
 			{
-				#pragma omp atomic
-				++m_MatFast_tot;
-				if (uc) {
+				uc = c_uc; up = c_up;                 // reuse this cell's ny=0 result
+			}
+			else
+			{
+				up = NULL;
+				uc = ClassifyUniformCell(pos, vPrims, &up);
+				c_pos[0]=pos[0]; c_pos[1]=pos[1]; c_pos[2]=pos[2]; c_uc=uc; c_up=up;
+				if (m_MatFastProf)
+				{
 					#pragma omp atomic
-					++m_MatFast_hit;
+					++m_MatFast_tot;
+					if (uc) {
+						#pragma omp atomic
+						++m_MatFast_hit;
+					}
 				}
 			}
 			if (uc)
