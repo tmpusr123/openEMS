@@ -56,6 +56,7 @@
 //external libs
 #include "tinyxml.h"
 #include "ContinuousStructure.h"
+#include "CSPropExcitation.h"
 #include "CSPropProbeBox.h"
 #include "CSPrimBox.h"
 #include "CSPropDumpBox.h"
@@ -1076,8 +1077,22 @@ int openEMS::SetupFDTD()
 
 	FDTD_Op->SetExcitationSignal(m_Exc);
 	FDTD_Op->AddExtension(new Operator_Ext_Excitation(FDTD_Op));
-	if (!CylinderCoords)
-		FDTD_Op->AddExtension(new Operator_Ext_TFSF(FDTD_Op));
+	if (!CylinderCoords && (m_CSX!=NULL))
+	{
+		// One TFSF extension per plane-wave (exc_type 10) excitation property:
+		// multiple plane-wave sources superpose additively, e.g. two
+		// quadrature-delayed components forming a circular or elliptical
+		// polarization state. Sims without a plane-wave excite get no TFSF
+		// extension at all (same physics as the old always-registered,
+		// self-deactivating instance).
+		vector<CSProperties*> exc_props = m_CSX->GetPropertyByType(CSProperties::EXCITATION);
+		for (size_t n=0;n<exc_props.size();++n)
+		{
+			CSPropExcitation* exc_prop = exc_props.at(n)->ToExcitation();
+			if ((exc_prop!=NULL) && (exc_prop->GetExcitType()==10))
+				FDTD_Op->AddExtension(new Operator_Ext_TFSF(FDTD_Op, exc_prop));
+		}
+	}
 
 	if (FDTD_Op->SetGeometryCSX(m_CSX)==false)
 	{
