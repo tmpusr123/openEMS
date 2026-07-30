@@ -23,12 +23,18 @@
 #include "tools/constants.h"
 
 class Excitation;
+class CSPropExcitation;
 
 class Operator_Ext_TFSF : public Operator_Extension
 {
 	friend class Engine_Ext_TFSF;
 public:
-	Operator_Ext_TFSF(Operator* op);
+	//! Create a TFSF extension. If \a pw_prop is given, this instance is bound
+	//! to that single plane-wave (exc_type 10) excitation property; multiple
+	//! bound instances superpose additively (e.g. two quadrature-delayed
+	//! components forming a circular polarization). With pw_prop==NULL the
+	//! legacy behavior applies: scan for the first plane-wave excitation.
+	Operator_Ext_TFSF(Operator* op, CSPropExcitation* pw_prop=NULL);
 	~Operator_Ext_TFSF();
 
 	virtual Operator_Extension* Clone(Operator* op);
@@ -55,6 +61,13 @@ public:
 
 protected:
 	Excitation* m_Exc;
+
+	//! plane-wave excitation property this instance is bound to (NULL = legacy scan)
+	CSPropExcitation* m_PW_Prop;
+
+	//! signal delay of this source in timesteps (from the property's delay),
+	//! baked into every per-cell injection delay
+	double m_SignalDelayTS;
 
 	bool m_IncLow[3];
 	bool m_ActiveDir[3][2]; // m_ActiveDir[direction][low/high]
