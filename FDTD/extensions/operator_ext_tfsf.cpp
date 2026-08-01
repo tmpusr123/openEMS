@@ -163,6 +163,12 @@ bool Operator_Ext_TFSF::BuildExtension()
 			return false;
 		}
 
+		// This box is consumed as the Huygens surface. Mark it used so the
+		// post-build usage check doesn't warn on overlapping multi-source
+		// boxes (identical boxes from e.g. a decoupling-plane image source:
+		// the excitation coord sweep only tie-marks one of them).
+		prim->SetPrimitiveUsed(true);
+
 		m_Frequency = elec->GetFrequency();
 //		if (m_Frequency<=0)
 //			m_Frequency = m_Op->GetExcitationSignal()->GetFrequencyOfInterest();
