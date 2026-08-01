@@ -199,13 +199,21 @@ bool Operator_Ext_TFSF::BuildExtension()
 			else
 				m_ActiveDir[n][1]=true;
 
+			// The phase-reference corner is one line outside the box on the
+			// incoming side. A box face flush with the domain boundary (its
+			// injection face is deactivated, e.g. a decoupling-plane image
+			// source starting at a PEC ground on line 0) has no outside line:
+			// m_Start-1 underflows the unsigned index and GetDiscLine's
+			// bounds check silently returns 0.0, corrupting every per-cell
+			// injection delay of that source. Clamp to the boundary line.
 			if (m_IncLow[n])
 			{
-				ui_origin[n] = m_Start[n]-1;
+				ui_origin[n] = (m_Start[n]>0) ? m_Start[n]-1 : 0;
 			}
 			else
 			{
-				ui_origin[n] = m_Stop[n]+1;
+				unsigned int last = m_Op->GetNumberOfLines(n,true)-1;
+				ui_origin[n] = (m_Stop[n]<last) ? m_Stop[n]+1 : last;
 			}
 			origin[n] = m_Op->GetDiscLine(n,ui_origin[n]);
 		}
