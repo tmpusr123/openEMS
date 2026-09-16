@@ -1173,8 +1173,19 @@ int Operator::CalcECOperator( DebugFlags debugFlags )
 		        (_tp.tv_sec-_op_t2.tv_sec)+1e-6*(_tp.tv_usec-_op_t2.tv_usec)); }
 
 	//all information available for extension... create now...
+	// Timed per extension: BuildExtension() does full-volume geometry work for
+	// some extensions (dispersive/Lorentz/Debye scans every cell, once per
+	// dispersion order), and it used to be the one setup stage with no PROF
+	// coverage -- a multi-hour stall here looked like a hang.
 	for (size_t n=0; n<m_Op_exts.size(); ++n)
+	{
+		timeval _te0; if (_op_prof) gettimeofday(&_te0, NULL);
 		m_Op_exts.at(n)->BuildExtension();
+		if (_op_prof) { timeval _te1; gettimeofday(&_te1, NULL);
+			fprintf(stderr, "[PROF] operator ext BuildExtension %-38s %.2fs\n",
+			        m_Op_exts.at(n)->GetExtensionName().c_str(),
+			        (_te1.tv_sec-_te0.tv_sec)+1e-6*(_te1.tv_usec-_te0.tv_usec)); }
+	}
 
 	//remove inactive extensions
 	vector<Operator_Extension*>::iterator it = m_Op_exts.begin();
