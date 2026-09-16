@@ -16,6 +16,10 @@
 */
 
 #include "operator_ext_upml.h"
+#include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include "FDTD/operator_cylindermultigrid.h"
 #include "engine_ext_upml.h"
 #include "tools/array_ops.h"
@@ -389,16 +393,55 @@ bool Operator_Ext_UPML::BuildExtension()
 	iifo.Init("iifo", m_numLines);
 	iifn.Init("iifn", m_numLines);
 
-	unsigned int pos[3];
-	unsigned int loc_pos[3];
-	int nP,nPP;
-	double kappa_v[3]={0,0,0};
-	double kappa_i[3]={0,0,0};
-	double eff_Mat[4];
 	double dT = m_Op->GetTimestep();
 
-	for (loc_pos[0]=0; loc_pos[0]<m_numLines[0]; ++loc_pos[0])
+	// CalcGradingKappa() is a pure function of (ny,pos) -- every component is
+	// written on all three branches -- and on a Cartesian mesh its component m
+	// depends only on pos[m] and whether m==ny. Tabulating it does two things:
+	//  (a) it removes the ONLY thread-unsafe call from the loop below. m_GradingFunction
+	//      is a single shared FunctionParser, and fparser states plainly that Eval() is
+	//      not thread-safe (fpconfig.hh; FP_USE_THREAD_SAFE_EVAL is left undefined here).
+	//      Its eval stack lives in the copy-on-write mData, so even per-thread parser
+	//      COPIES would still share it -- tabulating sidesteps that entirely.
+	//  (b) it replaces ~6 Eval() calls per cell -- ~1e9 for a large face slab on a flat
+	//      mesh -- with a few array lookups, so it is a big win even single-threaded.
+	// Cylindrical meshes make component 1 depend on pos[0] too, so they keep the
+	// original call and run serially (cylindrical is not CUDA-capable anyway).
+	const bool _tab = (m_Op_Cyl==NULL);
+	std::vector<double> _kvT[3][3], _kiT[3][3];
+	if (_tab)
 	{
+		for (int ny=0; ny<3; ++ny)
+			for (int m=0; m<3; ++m)
+			{
+				unsigned int N = m_Op->GetNumberOfLines(m,true);
+				_kvT[ny][m].resize(N); _kiT[ny][m].resize(N);
+				unsigned int p[3] = {m_StartPos[0],m_StartPos[1],m_StartPos[2]};
+				double kv3[3]={0,0,0}, ki3[3]={0,0,0};
+				for (unsigned int i=0;i<N;++i)
+				{
+					p[m]=i;
+					CalcGradingKappa(ny,p,__Z0__,kv3,ki3);
+					_kvT[ny][m][i]=kv3[m]; _kiT[ny][m][i]=ki3[m];
+				}
+			}
+	}
+
+	// Parallel over x-planes: every write is to this cell only -- the extension's own
+	// vv/vvfo/vvfn/ii/iifo/iifn at loc_pos, and the main operator's VV/VI/II/IV at pos
+	// -- so planes are disjoint and the result is bit-identical to the serial sweep.
+	const int _nx = (int)m_numLines[0];
+#ifdef _OPENMP
+	#pragma omp parallel for schedule(dynamic,1) if(_tab)
+#endif
+	for (int _x=0; _x<_nx; ++_x)
+	{
+		unsigned int pos[3], loc_pos[3];
+		int nP,nPP;
+		double kappa_v[3]={0,0,0};
+		double kappa_i[3]={0,0,0};
+		double eff_Mat[4];
+		loc_pos[0]=(unsigned int)_x;
 		pos[0] = loc_pos[0] + m_StartPos[0];
 		for (loc_pos[1]=0; loc_pos[1]<m_numLines[1]; ++loc_pos[1])
 		{
@@ -410,7 +453,10 @@ bool Operator_Ext_UPML::BuildExtension()
 				for (int n=0; n<3; ++n)
 				{
 					m_Op->Calc_EffMatPos(n,pos,eff_Mat,vPrims);
-					CalcGradingKappa(n, pos,__Z0__ ,kappa_v ,kappa_i);
+					if (_tab)
+						for (int _m=0;_m<3;++_m) { kappa_v[_m]=_kvT[n][_m][pos[_m]]; kappa_i[_m]=_kiT[n][_m][pos[_m]]; }
+					else
+						CalcGradingKappa(n, pos,__Z0__ ,kappa_v ,kappa_i);
 					nP = (n+1)%3;
 					nPP = (n+2)%3;
 					// if eff_Mat[1] > 1e3 assume a metal and disable PML to continue a signal layer

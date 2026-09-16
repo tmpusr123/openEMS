@@ -16,6 +16,10 @@
 */
 
 #include "operator_ext_excitation.h"
+#include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include "engine_ext_excitation.h"
 #include "FDTD/excitation.h"
 #include "ContinuousStructure.h"
@@ -137,8 +141,26 @@ bool Operator_Ext_Excitation::BuildExtension()
 	CSProperties* prop=NULL;
 
 	unsigned int numLines[] = {m_Op->GetNumberOfLines(0,true),m_Op->GetNumberOfLines(1,true),m_Op->GetNumberOfLines(2,true)};
-	for (pos[2]=0; pos[2]<numLines[2]; ++pos[2])
+	// Full-volume scan: 2 GetPropertyByCoordPriority probes per cell per component.
+	// Parallel over z-planes; each plane collects into its own buckets, concatenated
+	// in z order afterwards -> reproduces the serial push_back ordering exactly.
+	// Writes into the main operator (SetVV/SetVI) touch only the current cell.
+	const int _nz = (int)numLines[2];
+	std::vector< std::vector<FDTD_FLOAT> >   B_volt_vExcit(_nz), B_curr_vExcit(_nz);
+	std::vector< std::vector<unsigned int> > B_volt_vDelay(_nz), B_curr_vDelay(_nz);
+	std::vector< std::vector<unsigned int> > B_volt_vDir(_nz),   B_curr_vDir(_nz);
+	std::vector< std::vector<unsigned int> > B_volt_vIndex0(_nz),B_volt_vIndex1(_nz),B_volt_vIndex2(_nz);
+	std::vector< std::vector<unsigned int> > B_curr_vIndex0(_nz),B_curr_vIndex1(_nz),B_curr_vIndex2(_nz);
+#ifdef _OPENMP
+	#pragma omp parallel for schedule(dynamic,1)
+#endif
+	for (int _z=0; _z<_nz; ++_z)
 	{
+		unsigned int pos[3];
+		double volt_coord[3], curr_coord[3];
+		CSPropExcitation* elec=NULL;
+		CSProperties* prop=NULL;
+		pos[2]=(unsigned int)_z;
 		for (pos[1]=0; pos[1]<numLines[1]; ++pos[1])
 		{
 			vector<CSPrimitives*> vPrims = m_Op->GetPrimitivesBoundBox(-1, pos[1], pos[2], CSProperties::EXCITATION);
@@ -168,12 +190,12 @@ bool Operator_Ext_Excitation::BuildExtension()
 							amp = elec->GetWeightedExcitation(n,volt_coord)*m_Op->GetEdgeLength(n,pos);// delta[n]*gridDelta;
 							if (amp!=0)
 							{
-								volt_vExcit.push_back(amp);
-								volt_vDelay.push_back((unsigned int)(elec->GetDelay()/dT));
-								volt_vDir.push_back(n);
-								volt_vIndex[0].push_back(pos[0]);
-								volt_vIndex[1].push_back(pos[1]);
-								volt_vIndex[2].push_back(pos[2]);
+								B_volt_vExcit[_z].push_back(amp);
+								B_volt_vDelay[_z].push_back((unsigned int)(elec->GetDelay()/dT));
+								B_volt_vDir[_z].push_back(n);
+								B_volt_vIndex0[_z].push_back(pos[0]);
+								B_volt_vIndex1[_z].push_back(pos[1]);
+								B_volt_vIndex2[_z].push_back(pos[2]);
 							}
 							if (elec->GetExcitType()==1) //hard excite
 							{
@@ -204,12 +226,12 @@ bool Operator_Ext_Excitation::BuildExtension()
 							amp = elec->GetWeightedExcitation(n,curr_coord)*m_Op->GetEdgeLength(n,pos,true);// delta[n]*gridDelta;
 							if (amp!=0)
 							{
-								curr_vExcit.push_back(amp);
-								curr_vDelay.push_back((unsigned int)(elec->GetDelay()/dT));
-								curr_vDir.push_back(n);
-								curr_vIndex[0].push_back(pos[0]);
-								curr_vIndex[1].push_back(pos[1]);
-								curr_vIndex[2].push_back(pos[2]);
+								B_curr_vExcit[_z].push_back(amp);
+								B_curr_vDelay[_z].push_back((unsigned int)(elec->GetDelay()/dT));
+								B_curr_vDir[_z].push_back(n);
+								B_curr_vIndex0[_z].push_back(pos[0]);
+								B_curr_vIndex1[_z].push_back(pos[1]);
+								B_curr_vIndex2[_z].push_back(pos[2]);
 							}
 							if (elec->GetExcitType()==3) //hard excite
 							{
@@ -222,6 +244,21 @@ bool Operator_Ext_Excitation::BuildExtension()
 
 			}
 		}
+	}
+	for (int _z=0; _z<_nz; ++_z)
+	{
+		volt_vExcit.insert(volt_vExcit.end(), B_volt_vExcit[_z].begin(), B_volt_vExcit[_z].end());
+		volt_vDelay.insert(volt_vDelay.end(), B_volt_vDelay[_z].begin(), B_volt_vDelay[_z].end());
+		volt_vDir.insert(  volt_vDir.end(),   B_volt_vDir[_z].begin(),   B_volt_vDir[_z].end());
+		volt_vIndex[0].insert(volt_vIndex[0].end(), B_volt_vIndex0[_z].begin(), B_volt_vIndex0[_z].end());
+		volt_vIndex[1].insert(volt_vIndex[1].end(), B_volt_vIndex1[_z].begin(), B_volt_vIndex1[_z].end());
+		volt_vIndex[2].insert(volt_vIndex[2].end(), B_volt_vIndex2[_z].begin(), B_volt_vIndex2[_z].end());
+		curr_vExcit.insert(curr_vExcit.end(), B_curr_vExcit[_z].begin(), B_curr_vExcit[_z].end());
+		curr_vDelay.insert(curr_vDelay.end(), B_curr_vDelay[_z].begin(), B_curr_vDelay[_z].end());
+		curr_vDir.insert(  curr_vDir.end(),   B_curr_vDir[_z].begin(),   B_curr_vDir[_z].end());
+		curr_vIndex[0].insert(curr_vIndex[0].end(), B_curr_vIndex0[_z].begin(), B_curr_vIndex0[_z].end());
+		curr_vIndex[1].insert(curr_vIndex[1].end(), B_curr_vIndex1[_z].begin(), B_curr_vIndex1[_z].end());
+		curr_vIndex[2].insert(curr_vIndex[2].end(), B_curr_vIndex2[_z].begin(), B_curr_vIndex2[_z].end());
 	}
 
 	//special treatment for primitives of type curve (treated as wires) see also Calc_PEC

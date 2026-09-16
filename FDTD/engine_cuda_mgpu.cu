@@ -20,6 +20,9 @@
 #include "hemi/hemi_error.h"
 #include "hemi/grid_stride_range.h"
 #include "tools/constants.h"
+#include "engine_cuda_coeff.h"
+
+#include <sys/time.h>
 
 #define MG_THREADS 256
 
@@ -174,62 +177,6 @@ __global__ void energyMgKernel(const FDTD_FLOAT *volt, const FDTD_FLOAT *curr,
 }
 
 // ---------------------------------------------------------------------------
-// per-slab compressed-coefficient build (slice of the operator's host arrays)
-// ---------------------------------------------------------------------------
-static void build_coeff_slice(
-    const FDTD_FLOAT *vv, const FDTD_FLOAT *vi,
-    const FDTD_FLOAT *ii, const FDTD_FLOAT *iv,
-    int num_cells,
-    void **d_index, bool *index_u16, FDTD_FLOAT **d_vv_vi, FDTD_FLOAT **d_ii_iv)
-{
-    std::vector<unsigned int> index(num_cells);
-    std::vector<FDTD_FLOAT> tbl_vvvi, tbl_iiiv;
-    std::unordered_map<std::string, unsigned int> lut;
-
-    for (int c = 0; c < num_cells; ++c)
-    {
-        FDTD_FLOAT sv[12];
-        sv[0]  = vv[c*3+0]; sv[1]  = vi[c*3+0];
-        sv[2]  = vv[c*3+1]; sv[3]  = vi[c*3+1];
-        sv[4]  = vv[c*3+2]; sv[5]  = vi[c*3+2];
-        sv[6]  = ii[c*3+0]; sv[7]  = iv[c*3+0];
-        sv[8]  = ii[c*3+1]; sv[9]  = iv[c*3+1];
-        sv[10] = ii[c*3+2]; sv[11] = iv[c*3+2];
-
-        std::string key((const char*)sv, sizeof(sv));
-        auto it = lut.find(key);
-        unsigned int idx;
-        if (it == lut.end())
-        {
-            idx = (unsigned int)(tbl_vvvi.size() / 6);
-            for (int j = 0; j < 6; ++j) tbl_vvvi.push_back(sv[j]);
-            for (int j = 0; j < 6; ++j) tbl_iiiv.push_back(sv[6 + j]);
-            lut.emplace(std::move(key), idx);
-        }
-        else
-            idx = it->second;
-        index[c] = idx;
-    }
-
-    unsigned int uniq = (unsigned int)(tbl_vvvi.size() / 6);
-    *index_u16 = (uniq <= 65535u);
-    if (*index_u16)
-    {
-        std::vector<unsigned short> idx16(num_cells);
-        for (int c = 0; c < num_cells; ++c) idx16[c] = (unsigned short)index[c];
-        checkCuda(cudaMalloc(d_index, (size_t)num_cells * sizeof(unsigned short)));
-        checkCuda(cudaMemcpy(*d_index, idx16.data(), (size_t)num_cells * sizeof(unsigned short), cudaMemcpyHostToDevice));
-    }
-    else
-    {
-        checkCuda(cudaMalloc(d_index, (size_t)num_cells * sizeof(unsigned int)));
-        checkCuda(cudaMemcpy(*d_index, index.data(), (size_t)num_cells * sizeof(unsigned int), cudaMemcpyHostToDevice));
-    }
-    checkCuda(cudaMalloc(d_vv_vi, (size_t)uniq * 6 * sizeof(FDTD_FLOAT)));
-    checkCuda(cudaMalloc(d_ii_iv, (size_t)uniq * 6 * sizeof(FDTD_FLOAT)));
-    checkCuda(cudaMemcpy(*d_vv_vi, tbl_vvvi.data(), (size_t)uniq * 6 * sizeof(FDTD_FLOAT), cudaMemcpyHostToDevice));
-    checkCuda(cudaMemcpy(*d_ii_iv, tbl_iiiv.data(), (size_t)uniq * 6 * sizeof(FDTD_FLOAT), cudaMemcpyHostToDevice));
-}
 
 // ---------------------------------------------------------------------------
 // Engine
@@ -260,6 +207,17 @@ Engine_cuda_mgpu::~Engine_cuda_mgpu()
 
 void Engine_cuda_mgpu::Init()
 {
+    // Stage timers for the multi-GPU engine build. This whole path was
+    // previously untimed, so anything slow here looked like a hang between
+    // "Create CUDA multi-GPU FDTD engine" and the first timestep.
+    const bool _prof = getenv("OPENEMS_PROF") != NULL;
+    struct _Clk {
+        static double now() { timeval t; gettimeofday(&t, NULL); return t.tv_sec + 1e-6*t.tv_usec; }
+    };
+    double _t_init = _Clk::now(), _t0 = _t_init;
+    #define MG_PROF(label) do { if (_prof) { double _n = _Clk::now(); \
+        fprintf(stderr, "[PROF] engine mgpu %-34s %.2fs\n", label, _n - _t0); _t0 = _n; } } while (0)
+
     int nDevices = 0;
     cudaGetDeviceCount(&nDevices);
     if (nDevices <= 0)
@@ -302,6 +260,8 @@ void Engine_cuda_mgpu::Init()
             if (can) { cudaSetDevice(b); cudaDeviceEnablePeerAccess(a, 0); cudaGetLastError(); }
         }
 
+    MG_PROF("slab layout + peer access");
+
     m_d_idx.resize(m_num_slabs);   m_idx_u16.resize(m_num_slabs);
     m_d_vvvi.resize(m_num_slabs);  m_d_iiiv.resize(m_num_slabs);
     m_d_energy.resize(m_num_slabs);
@@ -313,6 +273,7 @@ void Engine_cuda_mgpu::Init()
     m_h_stage.assign(m_num_slabs, NULL);
     m_stage_cap.assign(m_num_slabs, 0);
 
+    double _t_alloc = 0.0;
     for (int g = 0; g < m_num_slabs; ++g)
     {
         CudaSlabCtx &c = m_ctx[g];
@@ -323,6 +284,7 @@ void Engine_cuda_mgpu::Init()
         checkCuda(cudaStreamCreateWithFlags(&c.stream, cudaStreamNonBlocking));
 
         size_t bytes = (size_t)(nx_real + 2) * planeF * sizeof(FDTD_FLOAT);
+        if (_prof) _t_alloc -= _Clk::now();
         checkCuda(cudaMalloc(&c.d_volt, bytes));
         checkCuda(cudaMalloc(&c.d_curr, bytes));
         checkCuda(cudaMemset(c.d_volt, 0, bytes));
@@ -330,14 +292,20 @@ void Engine_cuda_mgpu::Init()
 
         checkCuda(cudaMalloc(&c.d_numTS, sizeof(int)));
         checkCuda(cudaMemset(c.d_numTS, 0, sizeof(int)));
+        if (_prof) { checkCuda(cudaStreamSynchronize(0)); _t_alloc += _Clk::now(); }
 
         // coefficient slice for this slab's real cells
         size_t cellOfs = (size_t)c.x_start * ny * nz * 3;
         bool u16 = false;
-        build_coeff_slice(Op->vv_ptr->data() + cellOfs, Op->vi_ptr->data() + cellOfs,
+        unsigned int uniq_g = 0;
+        char _cc_tag[32];
+        snprintf(_cc_tag, sizeof(_cc_tag), "slab %d ", g);
+        openems_build_compressed_coeff(
+                          Op->vv_ptr->data() + cellOfs, Op->vi_ptr->data() + cellOfs,
                           Op->ii_ptr->data() + cellOfs, Op->iv_ptr->data() + cellOfs,
                           nx_real * ny * nz,
-                          &m_d_idx[g], &u16, &m_d_vvvi[g], &m_d_iiiv[g]);
+                          &m_d_idx[g], &u16, &m_d_vvvi[g], &m_d_iiiv[g],
+                          &uniq_g, _cc_tag);
         m_idx_u16[g] = u16;
 
         checkCuda(cudaMalloc(&m_d_energy[g], sizeof(double)));
@@ -349,6 +317,11 @@ void Engine_cuda_mgpu::Init()
         }
     }
 
+    if (_prof) {
+        fprintf(stderr, "[PROF] engine mgpu %-34s %.2fs\n", "device alloc + zero (all slabs)", _t_alloc);
+        _t0 = _Clk::now();
+    }
+
     // pinned full-size host mirror + per-slab pinned energy results
     size_t mirrorBytes = (size_t)gnx * planeF * sizeof(FDTD_FLOAT);
     checkCuda(cudaHostAlloc(&m_h_volt, mirrorBytes, cudaHostAllocDefault));
@@ -356,9 +329,14 @@ void Engine_cuda_mgpu::Init()
     memset(m_h_volt, 0, mirrorBytes);
     memset(m_h_curr, 0, mirrorBytes);
     checkCuda(cudaHostAlloc(&m_h_energy, m_num_slabs * sizeof(double), cudaHostAllocDefault));
+    if (_prof)
+        fprintf(stderr, "[PROF] engine mgpu pinned host mirror           %.2fs (2 x %.2f GB)\n",
+                _Clk::now() - _t0, mirrorBytes / 1e9);
+    _t0 = _Clk::now();
 
     InitExtensions();
     SortExtensionByPriority();
+    MG_PROF("InitExtensions");
 
     for (size_t n = 0; n < m_Eng_exts.size(); ++n)
         if (!m_Eng_exts.at(n)->IsCUDACapable())
@@ -366,6 +344,11 @@ void Engine_cuda_mgpu::Init()
                       << m_Eng_exts.at(n)->GetExtensionName()
                       << "' has no CUDA implementation -- its effect is silently ignored."
                       << std::endl;
+
+    if (_prof)
+        fprintf(stderr, "[PROF] engine mgpu TOTAL Init                   %.2fs\n",
+                _Clk::now() - _t_init);
+    #undef MG_PROF
 }
 
 void Engine_cuda_mgpu::Reset()

@@ -1728,9 +1728,18 @@ void Operator::BuildSimpleMaterialSet()
 	for (size_t i=0; i<vMats.size(); ++i)
 	{
 		CSProperties* prop = vMats.at(i);
-		// pure, non-dispersive material only (exact MATERIAL type -- excludes
-		// dispersive/Lorentz/Debye/conducting-sheet/discrete subtypes)
-		if (prop->GetType() != CSProperties::MATERIAL) continue;
+		// The BASE eps/kappa/mue/sigma are what AverageMatQuarterCell averages, and
+		// CSPropDispersive/Lorentz/DebyeMaterial do NOT override GetEpsilonWeighted &
+		// friends -- their dispersion lives in separate getters (GetEpsDelta,
+		// GetEpsRelaxTime, ...) consumed only by Operator_Ext_LorentzMaterial. So a
+		// non-graded Drude/Lorentz/Debye material has base parameters exactly as
+		// constant as a plain one and is safe for the fast path. Admit MATERIAL plus
+		// the dispersive marker bits only; anything else (conducting sheet, discrete,
+		// lumped, ...) may redefine the base getters, so stays on the full path.
+		const int _allowed = CSProperties::MATERIAL | CSProperties::DISPERSIVEMATERIAL
+		                   | CSProperties::LORENTZMATERIAL | CSProperties::DEBYEMATERIAL;
+		if (!(prop->GetType() & CSProperties::MATERIAL)) continue;
+		if (prop->GetType() & ~_allowed) continue;
 		CSPropMaterial* mat = dynamic_cast<CSPropMaterial*>(prop);
 		if (!mat) continue;
 		// non-graded: no spatial weighting function on any component/direction
