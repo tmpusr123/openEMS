@@ -90,6 +90,60 @@ static inline void openems_build_compressed_coeff(
     for (int t = 0; t <= nthreads; ++t)
         rstart[t] = (int)((long long)num_cells * t / nthreads);
 
+    // ---- degeneracy probe ------------------------------------------------
+    // Dedup only pays when many cells share a coefficient set. On a heavily
+    // graded mesh every cell has its own dx/dy/dz, so almost every cell is
+    // unique and the scheme collapses: the hash maps cost O(num_cells)
+    // inserts (the per-thread maps AND the serial global merge, which is the
+    // single-core phase users see in htop after the parallel phase ends), and
+    // the "compressed" table ends up nearly as large as the raw coefficients.
+    //
+    // Probe a strided sample first. If the sample is mostly unique, skip
+    // hashing altogether and emit the coefficients in cell order with an
+    // identity index -- same per-cell values, so results are bit-identical;
+    // the build becomes a linear copy. Costs ~4 B/cell more on the device
+    // than a degenerate "compressed" table, which is why it is only used
+    // when compression has already been shown not to pay.
+    // OPENEMS_COEFF_FORCE_COMPRESS=1 forces the hashing path back on.
+    bool direct = false;
+    if (getenv("OPENEMS_COEFF_FORCE_DIRECT") != NULL)
+        direct = true;          // validation lever: exercise the direct path on any mesh
+    else if (num_cells > 0 && getenv("OPENEMS_COEFF_FORCE_COMPRESS") == NULL)
+    {
+        const int S = (num_cells < 262144) ? num_cells : 262144;
+        const long long stride = (long long)num_cells / S;
+        std::unordered_map<Key, unsigned int, KHash, KEq> smap;
+        smap.reserve(S * 2);
+        for (int i = 0; i < S; ++i)
+            smap.emplace(loadKey((int)(i * stride)), 0u);
+        // >60% of a strided sample unique => dedup ratio is below ~1.7x
+        direct = ((double)smap.size() > 0.60 * (double)S);
+        if (direct && _cc_prof)
+            fprintf(stderr, "[PROF] engine %scoeff dedup probe: %zu/%d sample unique "
+                            "-> mesh too graded to compress, using direct (unhashed) upload\n",
+                    tag, smap.size(), S);
+    }
+
+    if (direct)
+    {
+        tbl_vvvi.resize((size_t)num_cells * 6);
+        tbl_iiiv.resize((size_t)num_cells * 6);
+        std::vector<std::thread> pool;
+        for (int t = 0; t < nthreads; ++t)
+            pool.emplace_back([&, t]() {
+                for (int c = rstart[t]; c < rstart[t+1]; ++c) {
+                    Key k = loadKey(c);
+                    for (int j = 0; j < 6; ++j) {
+                        tbl_vvvi[(size_t)c*6 + j] = k.v[j];
+                        tbl_iiiv[(size_t)c*6 + j] = k.v[6 + j];
+                    }
+                    index[c] = (unsigned int)c;   // identity: table is in cell order
+                }
+            });
+        for (auto& th : pool) th.join();
+    }
+    else {
+
     // Pass 1 (parallel): each thread dedups its own cell range into a local table.
     // index[c] temporarily holds the thread-LOCAL unique index.
     std::vector<std::vector<Key>> loc_uniq(nthreads);
@@ -144,6 +198,8 @@ static inline void openems_build_compressed_coeff(
         for (auto& th : pool) th.join();
     }
 
+    }   // end hashing path
+
     unsigned int uniq = (unsigned int)(tbl_vvvi.size() / 6);
     *num_unique = uniq;
 
@@ -152,8 +208,9 @@ static inline void openems_build_compressed_coeff(
     // halve the index traffic that both update kernels read every timestep.
     // Fall back to uint32 for pathological heterogeneity.
     *index_u16 = (uniq <= 65535u);
-    printf("%scoeff compression: %u unique / %d cells (%.2fx dedup, table %.2f MB, %s index)\n",
-           tag, uniq, num_cells, (double)num_cells / uniq,
+    printf("%scoeff %s: %u unique / %d cells (%.2fx dedup, table %.2f MB, %s index)\n",
+           tag, direct ? "direct (uncompressed)" : "compression",
+           uniq, num_cells, (double)num_cells / uniq,
            uniq * 12.0 * sizeof(FDTD_FLOAT) / 1e6, *index_u16 ? "u16" : "u32");
     if (_cc_prof) { timeval _t; gettimeofday(&_t,NULL);
         fprintf(stderr, "[PROF] engine %scoeff compression (%d threads): %.2fs\n", tag,
