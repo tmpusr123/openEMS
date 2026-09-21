@@ -65,7 +65,7 @@ public:
 
 	virtual bool BuildExtension();
 
-	virtual Engine_Extension* CreateEngineExtention();
+	virtual Engine_Extension* CreateEngineExtention(Engine *engine);
 
 	virtual std::string GetExtensionName() const
 	{

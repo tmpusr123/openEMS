@@ -307,7 +307,7 @@ bool Operator_Ext_InvisiblePML::BuildExtension()
 	return true;
 }
 
-Engine_Extension* Operator_Ext_InvisiblePML::CreateEngineExtention()
+Engine_Extension* Operator_Ext_InvisiblePML::CreateEngineExtention(Engine *engine)
 {
 	return new Engine_Ext_InvisiblePML(this);
 }

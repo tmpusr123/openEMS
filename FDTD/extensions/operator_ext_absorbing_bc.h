@@ -60,7 +60,7 @@ public:
 
 	virtual bool BuildExtension();
 
-	virtual Engine_Extension* CreateEngineExtention();
+	virtual Engine_Extension* CreateEngineExtention(Engine *engine);
 
 	//virtual bool IsMPISave() const {return true;}
 

@@ -252,7 +252,7 @@ bool Operator_Ext_Absorbing_BC::BuildExtension()
 	return true;
 }
 
-Engine_Extension* Operator_Ext_Absorbing_BC::CreateEngineExtention()
+Engine_Extension* Operator_Ext_Absorbing_BC::CreateEngineExtention(Engine *engine)
 {
 	Engine_Ext_Absorbing_BC* eng_ext = new Engine_Ext_Absorbing_BC(this);
 	return eng_ext;
