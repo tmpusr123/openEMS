@@ -160,6 +160,21 @@ bool Operator_Ext_Excitation::BuildExtension()
 	CSPropExcitation* 	elec=NULL;
 	CSProperties* 		prop=NULL;
 
+	// Parse every mode file up front.  GetWeightedExcitation() parses lazily on
+	// first use, which is fine serially but is a data race here: the cell scan
+	// below is parallel over z-planes, so several threads would enter
+	// ParseModeFile() on the same CSPropExcitation at once and corrupt the
+	// heap while filling the same vectors ("double free or corruption").
+	// Doing it here also keeps the per-cell path free of any locking.
+	for (size_t p=0; p<vec_prop.size(); ++p)
+	{
+		CSPropExcitation* pe = vec_prop.at(p)->ToExcitation();
+		if ((pe!=NULL) && pe->GetFieldSourceIsFile())
+			if (!pe->ParseModeFile())
+				cerr << "Operator_Ext_Excitation::BuildExtension: Warning, could not parse mode file '"
+				     << pe->GetModeFileName() << "'" << endl;
+	}
+
 	unsigned int numLines[] = {m_Op->GetNumberOfLines(0,true),m_Op->GetNumberOfLines(1,true),m_Op->GetNumberOfLines(2,true)};
 	// Full-volume scan: 2 GetPropertyByCoordPriority probes per cell per component.
 	// Parallel over z-planes; each plane collects into its own buckets, concatenated
