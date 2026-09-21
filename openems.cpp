@@ -602,9 +602,22 @@ bool openEMS::SetupProcessing()
 						pmm->SetModeFileName(pb->GetModeFileName());
 					else
 					{
-						pmm->SetModeFunction(0,pb->GetAttributeValue("ModeFunctionX"));
-						pmm->SetModeFunction(1,pb->GetAttributeValue("ModeFunctionY"));
-						pmm->SetModeFunction(2,pb->GetAttributeValue("ModeFunctionZ"));
+						// CSXCAD used to keep the mode functions as generic
+						// <Attributes>; they are now typed members, and Read()
+						// migrates the old attribute away.  Prefer the typed
+						// accessor and fall back to the attribute, so both an
+						// older CSXCAD and an older XML still work.  Reading only
+						// the attribute silently yielded an empty function, which
+						// ProcessModeMatch reported as a parse error and then
+						// wrote no probe file at all.
+						const char* attr[3] = {"ModeFunctionX","ModeFunctionY","ModeFunctionZ"};
+						for (int n=0; n<3; ++n)
+						{
+							std::string fct = pb->GetModeFunction(n);
+							if (fct.empty())
+								fct = pb->GetAttributeValue(attr[n]);
+							pmm->SetModeFunction(n, fct);
+						}
 					}
 					proc = pmm;
 				}
