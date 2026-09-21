@@ -64,6 +64,18 @@ public:
 	//! Get the length of the excitation signal
 	unsigned int GetLength() const {return Length;}
 
+	//! Force the excitation waveform to have zero time-integral.
+	/*!
+	  A soft excitation deposits net charge proportional to the time-integral of
+	  its waveform. Inside a structure closed by PEC the leftover static field
+	  cannot leave, and it keeps the energy criterion from ever tripping.
+	  The correction subtracts a Hann-shaped bump that cancels the integral; unlike
+	  a plain mean subtraction it leaves no step at the ends of the support. Only
+	  the spectrum immediately around DC is reshaped.
+	  */
+	void SetZeroMean(bool val) {m_ZeroMean=val;}
+	bool GetZeroMean() const {return m_ZeroMean;}
+
 	//! Get the max frequency excited by this signal
 	double GetMaxFrequency() const {return m_f_max;}
 
@@ -77,8 +89,12 @@ public:
 	FDTD_FLOAT* GetCurrentSignal() const {return Signal_curr;}
 
 protected:
+	//! Subtract the Hann-shaped bump that makes the waveform integral zero. \sa SetZeroMean
+	void RemoveSignalMean();
+
 	double dT;
 	unsigned int m_nyquistTS;
+	bool m_ZeroMean;
 	double m_SignalPeriod;
 	ExciteTypes m_Excit_Type;
 

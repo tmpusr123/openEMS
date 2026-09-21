@@ -39,6 +39,8 @@
 #include "FDTD/extensions/operator_ext_conductingsheet.h"
 #include "FDTD/extensions/operator_ext_lossymetal.h"
 #include "FDTD/extensions/operator_ext_steadystate.h"
+#include "FDTD/extensions/operator_ext_absorbing_bc.h"
+#include "FDTD/extensions/operator_ext_invisible_pml.h"
 #include "FDTD/extensions/engine_ext_steadystate.h"
 #include "FDTD/engine_interface_fdtd.h"
 #include "FDTD/engine_interface_cylindrical_fdtd.h"
@@ -433,6 +435,57 @@ bool openEMS::SetupBoundaryConditions()
 	return true;
 }
 
+void openEMS::SetupAbsorbingSheets()
+{
+	vector<CSProperties*>	cs_props;
+	cs_props = m_CSX->GetPropertyByType(CSProperties::ABSORBING_BC);
+
+	for(size_t n = 0 ; n < cs_props.size() ; ++n)
+	{
+		CSPropAbsorbingBC * cABCprops = dynamic_cast<CSPropAbsorbingBC*>(cs_props.at(n));
+
+		// Now start iterating through primitives
+		vector<CSPrimitives*> cs_abc_prims = cABCprops->GetAllPrimitives();
+		for (size_t sheetIdx = 0 ; sheetIdx < cs_abc_prims.size() ; ++sheetIdx)
+		{
+
+			CSPrimitives* cPrimitive = cs_abc_prims.at(sheetIdx);
+
+			// The PML types live in their own extension
+			CSPropAbsorbingBC::ABCtype abcType = cABCprops->GetAbsorbingBoundaryType();
+			if ((abcType == CSPropAbsorbingBC::PML_8) || (abcType == CSPropAbsorbingBC::PML_16) || (abcType == CSPropAbsorbingBC::PML_32))
+			{
+				Operator_Ext_InvisiblePML* op_ext_pml = new Operator_Ext_InvisiblePML(FDTD_Op);
+				if (op_ext_pml->SetInitParams(cPrimitive,cABCprops))
+					FDTD_Op->AddExtension(op_ext_pml);
+				else
+				{
+					cerr << "openEMS::SetupAbsorbingSheets(): Warning: Invisible PML sheet #" << sheetIdx << " setup failed.";
+					delete op_ext_pml;
+				}
+				continue;
+			}
+
+			// Attempt to initialize operator extension
+			Operator_Ext_Absorbing_BC* op_ext_abc = new Operator_Ext_Absorbing_BC(FDTD_Op);
+
+			// Initialize all necessary parameters so the extension operator can be
+			// built later on.
+			if (op_ext_abc->SetInitParams(cPrimitive,cABCprops))
+				// Finally, add the extension
+				FDTD_Op->AddExtension(op_ext_abc);
+			else
+			{
+				cerr << "openEMS::SetupAbsorbingSheets(): Warning: Absorbing sheet #" << sheetIdx << " setup failed.";
+				delete op_ext_abc;
+			}
+
+		}
+
+	}
+
+}
+
 Engine_Interface_FDTD* openEMS::NewEngineInterface(int multigridlevel)
 {
 	Operator_CylinderMultiGrid* op_cyl_mg = dynamic_cast<Operator_CylinderMultiGrid*>(FDTD_Op);
@@ -541,9 +594,17 @@ bool openEMS::SetupProcessing()
 				{
 					ProcessModeMatch* pmm = new ProcessModeMatch(NewEngineInterface());
 					pmm->SetFieldType(pb->GetProbeType()-10);
-					pmm->SetModeFunction(0,pb->GetAttributeValue("ModeFunctionX"));
-					pmm->SetModeFunction(1,pb->GetAttributeValue("ModeFunctionY"));
-					pmm->SetModeFunction(2,pb->GetAttributeValue("ModeFunctionZ"));
+
+					// If the data is taken from a file, store the file name
+					// in the processmodematch object
+					if (pb->GetFieldSourceIsFile())
+						pmm->SetModeFileName(pb->GetModeFileName());
+					else
+					{
+						pmm->SetModeFunction(0,pb->GetAttributeValue("ModeFunctionX"));
+						pmm->SetModeFunction(1,pb->GetAttributeValue("ModeFunctionY"));
+						pmm->SetModeFunction(2,pb->GetAttributeValue("ModeFunctionZ"));
+					}
 					proc = pmm;
 				}
 				else
@@ -979,6 +1040,11 @@ void openEMS::SetGaussExcite(double f0, double fc)
 {
 	this->InitExcitation();
 	m_Exc->SetupGaussianPulse(f0, fc);
+}
+
+void openEMS::SetExciteZeroMean(bool val)
+{
+	m_Exc->SetZeroMean(val);
 }
 
 void openEMS::SetSinusExcite(double f0)

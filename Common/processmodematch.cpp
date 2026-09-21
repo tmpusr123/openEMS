@@ -1,5 +1,6 @@
 /*
 *	Copyright (C) 2010 Thorsten Liebig (Thorsten.Liebig@gmx.de)
+*	Copyright (C) 2025 Gadi Lahav <gadi@rfwithcare.com>
 *
 *	This program is free software: you can redistribute it and/or modify
 *	it under the terms of the GNU General Public License as published by
@@ -31,6 +32,12 @@ ProcessModeMatch::ProcessModeMatch(Engine_Interface_Base* eng_if) : ProcessInteg
 	}
 	delete[] m_Results;
 	m_Results = new double[2];
+
+	m_ModeFieldType = 0;
+	m_ny = 0;
+
+	m_ModeFileName.clear();
+	m_FieldSourceIsFile = false;
 }
 
 ProcessModeMatch::~ProcessModeMatch()
@@ -82,6 +89,7 @@ void ProcessModeMatch::InitProcess()
 
 	int Dump_Dim=0;
 	m_ny = -1;
+	unsigned int origin[3]; // the port's own start line: the template's local origin
 	for (int n=0; n<3; ++n)
 	{
 		if (start[n]>stop[n])
@@ -90,6 +98,8 @@ void ProcessModeMatch::InitProcess()
 			start[n]=stop[n];
 			stop[n]=help;
 		}
+		// before the boundary exclusion below moves start inwards
+		origin[n] = start[n];
 
 		//exclude boundaries from mode-matching
 		if (start[n]==0)
@@ -117,16 +127,20 @@ void ProcessModeMatch::InitProcess()
 	m_numLines[0] = stop[nP] - start[nP] + 1;
 	m_numLines[1] = stop[nPP] - start[nPP] + 1;
 
-	for (int n=0; n<2; ++n)
+	// Check that this isn't a custom mode, before running this test
+	if (!m_FieldSourceIsFile)
 	{
-		int ny = (m_ny+n+1)%3;
-		int res = m_ModeParser[n]->Parse(m_ModeFunction[ny], "x,y,z,rho,a,r,t");
-		if (res >= 0)
+		for (int n=0; n<2; ++n)
 		{
-			cerr << "ProcessModeMatch::InitProcess(): Warning, an error occurred parsing the mode matching function (see below) ..." << endl;
-			cerr << m_ModeFunction[ny] << "\n" << string(res, ' ') << "^\n" << m_ModeParser[n]->ErrorMsg() << "\n";
-			SetEnable(false);
-			Reset();
+			int ny = (m_ny+n+1)%3;
+			int res = m_ModeParser[n]->Parse(m_ModeFunction[ny], "x,y,z,rho,a,r,t");
+			if (res >= 0)
+			{
+				cerr << "ProcessModeMatch::InitProcess(): Warning, an error occurred parsing the mode matching function (see below) ..." << endl;
+				cerr << m_ModeFunction[ny] << "\n" << string(res, ' ') << "^\n" << m_ModeParser[n]->ErrorMsg() << "\n";
+				SetEnable(false);
+				Reset();
+			}
 		}
 	}
 
@@ -135,23 +149,30 @@ void ProcessModeMatch::InitProcess()
 		m_ModeDist[n] = Create2DArray<double>(m_numLines);
 	}
 
-	bool dualMesh = m_ModeFieldType==1;
+	// NODE_INTERPOLATE (set above) places E *and* H on the primary nodes, so the
+	// template is looked up there for both field types, never on the dual mesh.
 	unsigned int pos[3] = {0,0,0};
 	double discLine[3] = {0,0,0};
 	double gridDelta = 1; // 1 -> mode-matching function is defined in drawing units...
 	double var[7];
 	pos[m_ny] = start[m_ny];
-	discLine[m_ny] = Op->GetDiscLine(m_ny,pos[m_ny],dualMesh);
+	discLine[m_ny] = Op->GetDiscLine(m_ny,pos[m_ny]);
 	double norm = 0;
 	double area = 0;
-	for (unsigned int posP = 0; posP<m_numLines[0]; ++posP)
+
+	// If necessary, parse the file now
+	CSModeFileParser modeFile;
+	if (m_FieldSourceIsFile)
+		modeFile.ParseFile(m_ModeFileName);
+
+	for (unsigned int posP = 0; posP < m_numLines[0]; ++posP)
 	{
 		pos[nP] = start[nP] + posP;
-		discLine[nP] = Op->GetDiscLine(nP,pos[nP],dualMesh);
+		discLine[nP] = Op->GetDiscLine(nP,pos[nP]);
 		for (unsigned int posPP = 0; posPP<m_numLines[1]; ++posPP)
 		{
 			pos[nPP] = start[nPP] + posPP;
-			discLine[nPP] = Op->GetDiscLine(nPP,pos[nPP],dualMesh);
+			discLine[nPP] = Op->GetDiscLine(nPP,pos[nPP]);
 
 			var[0] = discLine[0] * gridDelta; // x
 			var[1] = discLine[1] * gridDelta; // y
@@ -170,15 +191,30 @@ void ProcessModeMatch::InitProcess()
 				var[5] = sqrt(pow(discLine[0],2)+pow(discLine[2],2)) * gridDelta; // r
 				var[6] = asin(1)-atan(var[2]/var[3]); //theta (t)
 			}
-			area = Op->GetNodeArea(m_ny,pos,dualMesh);
-			for (int n=0; n<2; ++n)
+			area = Op->GetNodeArea(m_ny,pos);
+
+			if (m_FieldSourceIsFile)
 			{
-				m_ModeDist[n][posP][posPP] = m_ModeParser[n]->Eval(var); //calc mode template
-				if ((std::isnan(m_ModeDist[n][posP][posPP])) || (std::isinf(m_ModeDist[n][posP][posPP])))
-					m_ModeDist[n][posP][posPP] = 0.0;
-				norm += pow(m_ModeDist[n][posP][posPP],2) * area;
+				double locCoord[3] = {
+						discLine[0] - Op->GetDiscLine(0,origin[0]),
+						discLine[1] - Op->GetDiscLine(1,origin[1]),
+						discLine[2] - Op->GetDiscLine(2,origin[2])};
+
+				modeFile.LinInterp2(locCoord[nP],locCoord[nPP],m_ModeDist[0][posP][posPP],m_ModeDist[1][posP][posPP]);
 			}
-//			cerr << discLine[0] << " " << discLine[1] << " : " << m_ModeDist[0][posP][posPP] << " , " << m_ModeDist[1][posP][posPP] << endl;
+			else
+				for (int n = 0; n < 2; ++n)
+				{
+					m_ModeDist[n][posP][posPP] = m_ModeParser[n]->Eval(var); //calc mode template
+					if ((std::isnan(m_ModeDist[n][posP][posPP])) || (std::isinf(m_ModeDist[n][posP][posPP])))
+						m_ModeDist[n][posP][posPP] = 0.0;
+
+				}
+
+			// Second pass, for normalization
+			for (int n=0; n<2; ++n)
+				norm += pow(m_ModeDist[n][posP][posPP],2) * area;
+
 		}
 	}
 
@@ -208,11 +244,12 @@ void ProcessModeMatch::Reset()
 	}
 }
 
-
 void ProcessModeMatch::SetModeFunction(int ny, string function)
 {
 	if ((ny<0) || (ny>2)) return;
 	m_ModeFunction[ny] = function;
+
+	this->m_ModeFileName.clear();
 }
 
 void ProcessModeMatch::SetFieldType(int type)
@@ -228,7 +265,6 @@ double* ProcessModeMatch::CalcMultipleIntegrals()
 	double field = 0;
 	double purity = 0;
 	double area = 0;
-    bool dualMesh = m_ModeFieldType==1;
 
 	int nP = (m_ny+1)%3;
 	int nPP = (m_ny+2)%3;
@@ -244,7 +280,7 @@ double* ProcessModeMatch::CalcMultipleIntegrals()
 		for (unsigned int posPP = 0; posPP<m_numLines[1]; ++posPP)
 		{
 			pos[nPP] = start[nPP] + posPP;
-			area = Op->GetNodeArea(m_ny,pos,dualMesh);
+			area = Op->GetNodeArea(m_ny,pos);
 			if (m_ModeFieldType==0)
 				m_Eng_Interface->GetEField(pos,out);
 			if (m_ModeFieldType==1)
@@ -264,4 +300,13 @@ double* ProcessModeMatch::CalcMultipleIntegrals()
 		m_Results[1] = 0;
 	m_Results[0] = value;
 	return m_Results;
+}
+
+void ProcessModeMatch::SetModeFileName(std::string fileName)
+{
+	if (fileName.length())
+	{
+		m_ModeFileName = fileName;
+		m_FieldSourceIsFile = true;
+	}
 }
