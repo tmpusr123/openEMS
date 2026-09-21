@@ -27,9 +27,18 @@ void kernelApply2VA(volatile FDTD_FLOAT *d_va, const exitation_point *ep, const 
     int p = signalPeriod;
     if (p <= 0) p = numTS + 1;
 
+	// The signal index must be gated, not clamped -- mirrors the host path in
+	// engine_ext_excitation.cpp.  An out-of-range index used to fall back on
+	// sig_va[0], so outside the pulse the kernel kept injecting that one sample
+	// every timestep: a DC source, unless the waveform starts at exactly zero.
+	// A Gaussian truncated at ~1e-4 of peak does not, and the trapped charge
+	// grows without bound.  Note this gates BOTH ends -- the old `>0` clamp also
+	// injected sample 0 on every step before the delay expired.
 	int exc_pos = numTS - ep->delay;
-	exc_pos *= (exc_pos>0);
+	int live = (exc_pos>=0);            // >=0: the first sample must
+	exc_pos *= live;                    // still fire when the delay expires
 	exc_pos %= p;
+	live    &= (exc_pos<(int)ep->length);
 	exc_pos *= (exc_pos<(int)ep->length);
 	int ny = ep->dir;
 
@@ -38,7 +47,7 @@ void kernelApply2VA(volatile FDTD_FLOAT *d_va, const exitation_point *ep, const 
     // Atomic so that two excitation points landing on the same (cell,component)
     // — overlapping or soft sources sharing an edge — accumulate instead of
     // racing (the same lost-update hazard the TFSF port hit at box edges).
-    atomicAdd((FDTD_FLOAT*)(d_va + 3 * pos + ny), ep->amp * sig_va[exc_pos]);
+    atomicAdd((FDTD_FLOAT*)(d_va + 3 * pos + ny), ep->amp * sig_va[exc_pos] * live);
 }
 
 

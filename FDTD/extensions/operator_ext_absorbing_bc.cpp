@@ -123,7 +123,7 @@ bool Operator_Ext_Absorbing_BC::SetInitParams(CSPrimitives* prim, CSPropAbsorbin
 		cerr 	<< "Operator_Ext_Absorbing_BC::SetInitParams(): Warning: Absorbing sheet Currently does not support per-material velocity. Setting to C0 "
 				<< " ID: " << prim->GetID() << " @ Property: " << abc_prop->GetName() << endl;
 
-		m_phaseVelocity = C0;
+		m_phaseVelocity = __C0__;
 	}
 
 	// Copy all of the relevant data, so BuildExtension ca0n work
@@ -227,8 +227,8 @@ bool Operator_Ext_Absorbing_BC::BuildExtension()
 					eps = m_Op->GetBackgroundEpsR();
 					mue = m_Op->GetBackgroundMueR();
 
-					vt_nyP  = C0 * dT / sqrt(eps*mue);
-					vt_nyPP = C0 * dT / sqrt(eps*mue);
+					vt_nyP  = __C0__ * dT / sqrt(eps*mue);
+					vt_nyPP = __C0__ * dT / sqrt(eps*mue);
 				}
 
 			}
