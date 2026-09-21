@@ -126,23 +126,45 @@ class nf2ff:
             fn = os.path.join(sim_path, self.name + '.h5')
         else:
             fn = os.path.join(sim_path,  outfile)
+
+        # Read-once-compute-many: when self._read_once is enabled, the first
+        # CalcNF2FF call for a given (sim_path, freq, center, radius) reads the
+        # near-field and caches it; subsequent calls that differ ONLY in
+        # theta/phi reuse that read via RecomputeForAngles instead of re-reading
+        # all six surface dumps (the dominant cost). Off by default → identical
+        # behaviour for callers that don't opt in.
+        ro = getattr(self, '_read_once', False) and not read_cached
+        ro_sig = (sim_path, tuple(np.atleast_1d(self.freq).tolist()),
+                  tuple(np.atleast_1d(center).tolist()), float(radius))
+
         if  not read_cached or not os.path.exists(fn):
-            nfc = _nf2ff._nf2ff(self.freq, np.deg2rad(theta), np.deg2rad(phi), center, verbose=verbose)
+            if ro and getattr(self, '_ro_nfc', None) is not None \
+                    and getattr(self, '_ro_sig', None) == ro_sig:
+                # reuse the cached near-field read; recompute the new angle grid
+                self._ro_nfc.RecomputeForAngles(np.deg2rad(theta), np.deg2rad(phi))
+                self._ro_nfc.Write2HDF5(fn)
+            else:
+                nfc = _nf2ff._nf2ff(self.freq, np.deg2rad(theta), np.deg2rad(phi), center, verbose=verbose)
 
-            for ny in range(3):
-                nfc.SetMirror(self.mirror[2*ny]  , ny, self.start[ny])
-                nfc.SetMirror(self.mirror[2*ny+1], ny, self.stop[ny])
+                for ny in range(3):
+                    nfc.SetMirror(self.mirror[2*ny]  , ny, self.start[ny])
+                    nfc.SetMirror(self.mirror[2*ny+1], ny, self.stop[ny])
 
-            nfc.SetRadius(radius)
+                nfc.SetRadius(radius)
+                if ro:
+                    nfc.SetCacheEnabled(True)
 
-            for n in range(6):
-                fn_e = os.path.join(sim_path, self.e_file + '_{}.h5'.format(n))
-                fn_h = os.path.join(sim_path, self.h_file + '_{}.h5'.format(n))
-                if os.path.exists(fn_e) and os.path.exists(fn_h):
-                    if not nfc.AnalyseFile(fn_e, fn_h):
-                        raise Exception('CalcNF2FF:: Unable to analyse files!')
+                for n in range(6):
+                    fn_e = os.path.join(sim_path, self.e_file + '_{}.h5'.format(n))
+                    fn_h = os.path.join(sim_path, self.h_file + '_{}.h5'.format(n))
+                    if os.path.exists(fn_e) and os.path.exists(fn_h):
+                        if not nfc.AnalyseFile(fn_e, fn_h):
+                            raise Exception('CalcNF2FF:: Unable to analyse files!')
 
-            nfc.Write2HDF5(fn)
+                nfc.Write2HDF5(fn)
+                if ro:
+                    self._ro_nfc = nfc
+                    self._ro_sig = ro_sig
 
         result = nf2ff_results(fn)
         if result.phi is not None:

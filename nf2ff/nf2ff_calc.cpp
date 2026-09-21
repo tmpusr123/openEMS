@@ -118,6 +118,19 @@ void nf2ff_calc_thread::operator()()
 	float k = 2*M_PI*m_nf_calc->m_freq/__C0__*sqrt(m_nf_calc->m_permittivity*m_nf_calc->m_permeability);
 	complex<float> exp_jkr;
 	complex<float> _I_(0,1);
+
+	// Separable-phase optimization. On a rectilinear (Cartesian) box face the
+	// projection r_cos_psi separates per axis, so exp(i k r_cos_psi) factors
+	// into a product of two precomputed 1D phase tables (one per in-plane
+	// axis) times a constant (the single normal-axis line) — eliminating the
+	// per-(direction x surface-point) complex exp, which dominated the cost.
+	// The inner loop then does just one complex multiply. Mathematically
+	// identical; only float rounding differs (~1e-7). Cylindrical meshes
+	// (mesh_type==1) are NOT separable (x=r*cos(a) couples two axes) and keep
+	// the exact original per-point exp.
+	complex<float>* phaseP  = new complex<float>[num_t>0?num_t:1];
+	complex<float>* phasePP = new complex<float>[numLines[nPP]>0?numLines[nPP]:1];
+
 	for (unsigned int tn=0;tn<m_nf_calc->m_numTheta;++tn)
 		for (unsigned int pn=0;pn<m_nf_calc->m_numPhi;++pn)
 		{
@@ -130,16 +143,30 @@ void nf2ff_calc_thread::operator()()
 			cosP_sinT = cosP*sinT;
 			sinT_sinP = sinP*sinT;
 
+			if (mesh_type==0)
+			{
+				// per-axis phase coefficient: axis 0(x)->cosP_sinT, 1(y)->sinT_sinP, 2(z)->cosT
+				float coef[3] = {cosP_sinT, sinT_sinP, cosT};
+				// normal axis is a single line (pos[ny]==0); fold its constant phase into phaseP
+				complex<float> phaseN = exp(_I_*k*((lines[ny][0]-center[ny])*coef[ny]));
+				for (pos_t=0; pos_t<num_t; ++pos_t)
+					phaseP[pos_t] = exp(_I_*k*((lines[nP][m_start+pos_t]-center[nP])*coef[nP])) * phaseN;
+				for (unsigned int j=0;j<numLines[nPP];++j)
+					phasePP[j] = exp(_I_*k*((lines[nPP][j]-center[nPP])*coef[nPP]));
+			}
+
 			for (pos_t=0; pos_t<num_t; ++pos_t)
 			{
 				pos[nP] = m_start+pos_t;
 				for (pos[nPP]=0; pos[nPP]<numLines[nPP]; ++pos[nPP])
 				{
 					if (mesh_type==0)
-						r_cos_psi = (lines[0][pos[0]]-center[0])*cosP_sinT + (lines[1][pos[1]]-center[1])*sinT_sinP + (lines[2][pos[2]]-center[2])*cosT;
+						exp_jkr = phaseP[pos_t]*phasePP[pos[nPP]];
 					else
+					{
 						r_cos_psi = ((lines[0][pos[0]]*cos(lines[1][pos[1]]))-center[0])*cosP_sinT + ((lines[0][pos[0]]*sin(lines[1][pos[1]]))-center[1])*sinT_sinP + (lines[2][pos[2]]-center[2])*cosT;
-					exp_jkr = exp(_I_*k*r_cos_psi);
+						exp_jkr = exp(_I_*k*r_cos_psi);
+					}
 					area = edge_length_P[pos[nP]]*edge_length_PP[pos[nPP]];
 					m_Nt[tn][pn] += area*exp_jkr*(Js[0][pos[0]][pos[1]][pos[2]]*cosT_cosP + Js[1][pos[0]][pos[1]][pos[2]]*cosT_sinP \
 												  - Js[2][pos[0]][pos[1]][pos[2]]*sinT);
@@ -151,6 +178,8 @@ void nf2ff_calc_thread::operator()()
 				}
 			}
 		}
+	delete[] phaseP;
+	delete[] phasePP;
 
 	m_nf_calc->m_Barrier->wait(); //combine all thread local Nt,Np,Lt and Lp
 
