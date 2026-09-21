@@ -1216,6 +1216,8 @@ int openEMS::SetupFDTD()
 		FDTD_Op->AddExtension(new Operator_Ext_LossyMetal(FDTD_Op, m_Exc->GetMaxFreq()));
 	if (m_CSX->GetQtyPropertyType(CSProperties::LUMPED_ELEMENT)>0)
 		FDTD_Op->AddExtension(new Operator_Ext_LumpedRLC(FDTD_Op));
+	if (m_CSX->GetQtyPropertyType(CSProperties::ABSORBING_BC)>0)
+		SetupAbsorbingSheets();
 
 
 	//check all properties to request material storage during operator creation...
