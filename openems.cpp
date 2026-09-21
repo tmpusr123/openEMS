@@ -37,6 +37,7 @@
 #include "FDTD/engine_cuda.h"
 #endif
 #include "FDTD/extensions/operator_ext_conductingsheet.h"
+#include "FDTD/extensions/operator_ext_lossymetal.h"
 #include "FDTD/extensions/operator_ext_steadystate.h"
 #include "FDTD/extensions/engine_ext_steadystate.h"
 #include "FDTD/engine_interface_fdtd.h"
@@ -60,6 +61,7 @@
 #include "CSPropProbeBox.h"
 #include "CSPrimBox.h"
 #include "CSPropDumpBox.h"
+#include "CSPropLossyMetal.h"
 
 using namespace std;
 namespace po = boost::program_options;
@@ -1144,6 +1146,8 @@ int openEMS::SetupFDTD()
 		FDTD_Op->AddExtension(new Operator_Ext_LorentzMaterial(FDTD_Op));
 	if (m_CSX->GetQtyPropertyType(CSProperties::CONDUCTINGSHEET)>0)
 		FDTD_Op->AddExtension(new Operator_Ext_ConductingSheet(FDTD_Op, m_Exc->GetMaxFreq()));
+	if (m_CSX->GetQtyPropertyType(CSProperties::LOSSY_METAL)>0)
+		FDTD_Op->AddExtension(new Operator_Ext_LossyMetal(FDTD_Op, m_Exc->GetMaxFreq()));
 	if (m_CSX->GetQtyPropertyType(CSProperties::LUMPED_ELEMENT)>0)
 		FDTD_Op->AddExtension(new Operator_Ext_LumpedRLC(FDTD_Op));
 
