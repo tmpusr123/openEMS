@@ -154,6 +154,9 @@ protected:
 	ProcessingArray* PA;
 
 	Excitation* m_Exc;
+	//! Sticky zero-mean request: InitExcitation() replaces m_Exc, so the flag
+	//! is kept here and re-applied, making the call order irrelevant.
+	bool m_ExcZeroMean;
 
 	bool m_Abort;
 

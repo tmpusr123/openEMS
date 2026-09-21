@@ -99,6 +99,7 @@ openEMS::openEMS()
 
 	m_Abort = false;
 	m_Exc = 0;
+	m_ExcZeroMean = false;
 
 	m_TS_method=3;
 	m_TS=0;
@@ -1044,7 +1045,12 @@ void openEMS::SetGaussExcite(double f0, double fc)
 
 void openEMS::SetExciteZeroMean(bool val)
 {
-	m_Exc->SetZeroMean(val);
+	// m_Exc is null until an excitation waveform is chosen, and every
+	// Set*Excite() replaces it via InitExcitation(), so remember the request
+	// and apply it to whichever Excitation is current (now and after a reset).
+	m_ExcZeroMean = val;
+	if (m_Exc!=NULL)
+		m_Exc->SetZeroMean(val);
 }
 
 void openEMS::SetSinusExcite(double f0)
@@ -1075,6 +1081,7 @@ Excitation* openEMS::InitExcitation()
 {
 	delete m_Exc;
 	m_Exc = new Excitation();
+	m_Exc->SetZeroMean(m_ExcZeroMean);
 	return m_Exc;
 }
 
