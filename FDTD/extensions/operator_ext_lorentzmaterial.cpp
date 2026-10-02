@@ -21,7 +21,6 @@
 #include "../operator_cylinder.h"
 
 #include "CSPropLorentzMaterial.h"
-#include "CSPropDebyeMaterial.h"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -127,9 +126,6 @@ bool Operator_Ext_LorentzMaterial::BuildExtension()
 	double coord[3];
 	unsigned int numLines[3] = {m_Op->GetNumberOfLines(0,true),m_Op->GetNumberOfLines(1,true),m_Op->GetNumberOfLines(2,true)};
 	CSPropLorentzMaterial* mat = NULL;
-	CSPropDebyeMaterial* debye_mat = NULL;
-
-	bool warn_once = true;
 
 	bool b_pos_on;
 	vector<unsigned int> v_pos[3];
@@ -160,16 +156,6 @@ bool Operator_Ext_LorentzMaterial::BuildExtension()
 		if (LorMat->GetDispersionOrder()>m_Order)
 			m_Order=LorMat->GetDispersionOrder();
 	}
-	LD_props = m_Op->CSX->GetPropertyByType(CSProperties::DEBYEMATERIAL);
-	for (size_t n=0;n<LD_props.size();++n)
-	{
-		CSPropDebyeMaterial* DebyeMat = dynamic_cast<CSPropDebyeMaterial*>(LD_props.at(n));
-		if (DebyeMat==NULL)
-			return false; //sanity check, this should not happen
-		if (DebyeMat->GetDispersionOrder()>m_Order)
-			m_Order=DebyeMat->GetDispersionOrder();
-	}
-
 	m_LM_pos = new unsigned int**[m_Order];
 
 	m_volt_ADE_On = new bool[m_Order];
@@ -226,11 +212,11 @@ bool Operator_Ext_LorentzMaterial::BuildExtension()
 		std::vector< std::vector<double> > pl_v_int(_nx*3), pl_v_ext(_nx*3),
 		                                   pl_i_int(_nx*3), pl_i_ext(_nx*3),
 		                                   pl_v_Lor(_nx*3), pl_i_Lor(_nx*3);
-		bool f_volt=false, f_curr=false, f_vLor=false, f_iLor=false, f_warn=false;
+		bool f_volt=false, f_curr=false, f_vLor=false, f_iLor=false;
 		m_Op->MainOp->SetPos(0,0,0);   // cursor at origin -> GetPos below is a pure read
 #ifdef _OPENMP
 		#pragma omp parallel for schedule(dynamic,1) \
-			reduction(||:f_volt,f_curr,f_vLor,f_iLor,f_warn)
+			reduction(||:f_volt,f_curr,f_vLor,f_iLor)
 #endif
 		for (int _x=0; _x<_nx; ++_x)
 		{
@@ -239,7 +225,6 @@ bool Operator_Ext_LorentzMaterial::BuildExtension()
 			double L_D[3], C_D[3], R_D[3], G_D[3], C_L[3], L_L[3];
 			double w_plasma, t_relax, w_Lor_Pol;
 			CSPropLorentzMaterial* mat = NULL;
-			CSPropDebyeMaterial* debye_mat = NULL;
 			bool b_pos_on;
 			for (pos[1]=0; pos[1]<numLines[1]; ++pos[1])
 			{
@@ -286,20 +271,6 @@ bool Operator_Ext_LorentzMaterial::BuildExtension()
 							{
 								f_vLor = true;
 								C_L[n] = 1/(w_Lor_Pol*w_Lor_Pol*L_D[n]);
-							}
-						}
-						if ((debye_mat = prop->ToDebyeMaterial()))
-						{
-							C_L[n] = 8.85418781762e-12*debye_mat->GetEpsDeltaWeighted(order,n,coord) * m_Op->GetEdgeArea(n, pos) / m_Op->GetEdgeLength(n,pos);
-							t_relax = debye_mat->GetEpsRelaxTimeWeighted(order,n,coord);
-							if (t_relax<2.0*dT)
-								f_warn = true;
-							if ((C_L[n]>0) && (t_relax>0) && (t_relax>2.0*dT))
-							{
-								R_D[n] = t_relax/C_L[n];
-								b_pos_on = true;
-								f_volt = true;
-								f_vLor = true;
 							}
 						}
 					}
@@ -355,11 +326,6 @@ bool Operator_Ext_LorentzMaterial::BuildExtension()
 									pl_v_ext[_x*3+n].push_back(dT/(L_D[n]+dT*R_D[n]/2.0)*m_Op_Cyl->m_Cyl_Ext->vi_R0[pos[2]]);
 								else
 									pl_v_ext[_x*3+n].push_back(dT/(L_D[n]+dT*R_D[n]/2.0)*m_Op->GetVI(n,pos[0],pos[1],pos[2]));
-							}
-							else if ((R_D[n]>0) && (C_L[n]>0))
-							{
-								pl_v_int[_x*3+n].push_back((2.0*dT-R_D[n]*C_L[n])/(C_L[n]*R_D[n]));
-								pl_v_ext[_x*3+n].push_back(2.0/R_D[n]*m_Op->GetVI(n,pos[0],pos[1],pos[2]));
 							}
 							else
 							{
@@ -424,11 +390,6 @@ bool Operator_Ext_LorentzMaterial::BuildExtension()
 		if (f_curr) m_curr_ADE_On[order]     = true;
 		if (f_vLor) m_volt_Lor_ADE_On[order] = true;
 		if (f_iLor) m_curr_Lor_ADE_On[order] = true;
-		if (f_warn && warn_once)
-		{
-			warn_once = false;
-			cerr << "Operator_Ext_LorentzMaterial::BuildExtension(): Warning, debye relaxation time is to small, skipping..." << endl;
-		}
 		}
 
 		//copy all vectors into the array's
