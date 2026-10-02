@@ -37,6 +37,7 @@ Operator_Ext_InvisiblePML::Operator_Ext_InvisiblePML(Operator* op) : Operator_Ex
 	m_delta = 0;
 	for (int n=0; n<3; ++n)
 	{
+		m_innerRim[n][0] = m_innerRim[n][1] = false;
 		m_sheetX0[n] = 0;
 		m_sheetX1[n] = 0;
 		m_numLines[n] = 0;
@@ -136,9 +137,11 @@ bool Operator_Ext_InvisiblePML::SetInitParams(CSPrimitives* prim, CSPropAbsorbin
 	for (int n=1; n<3; ++n)
 	{
 		int nT = (m_ny+n)%3;
-		if ((m_sheetX0[nT]!=0) || (m_sheetX1[nT]!=m_Op->GetNumberOfLines(nT,true)-1))
+		m_innerRim[nT][0] = (m_sheetX0[nT]!=0);
+		m_innerRim[nT][1] = (m_sheetX1[nT]!=m_Op->GetNumberOfLines(nT,true)-1);
+		if (m_innerRim[nT][0] || m_innerRim[nT][1])
 			cerr << "Operator_Ext_InvisiblePML::SetInitParams(): Warning: Sheet does not span the full cross-section in direction " << nT
-				 << ". The virtual PML is bounded by the sheet's rim. ID: " << prim->GetID() << " @ Property: " << abc_prop->GetName() << endl;
+				 << ". The virtual PML is bounded by a PEC rim at the sheet's edge. ID: " << prim->GetID() << " @ Property: " << abc_prop->GetName() << endl;
 	}
 
 	prim->SetPrimitiveUsed(true);
@@ -247,7 +250,15 @@ bool Operator_Ext_InvisiblePML::BuildExtension()
 						kappa[m_ny] = GradingKappa(depth);
 						unsigned int i=loc[0], j=loc[1], k=loc[2];
 
-						if (field==0)
+						if ((field==0) && OnInnerRim(n, loc))
+						{
+							// the pocket behind a sheet that ends inside the domain is lined
+							// with PEC, as the block it sits in: E along a rim face stays zero.
+							// Left live, the rim lines carry E that the engine writes onto
+							// the edge of that PEC block, and the edge radiates and grows.
+							vv(n,i,j,k) = vv_m(n,i,j,k) = vi_m(n,i,j,k) = vvfo(n,i,j,k) = vvfn(n,i,j,k) = 0;
+						}
+						else if (field==0)
 						{
 							double t_vv = m_Op->GetVV(n, tpos[0], tpos[1], tpos[2]);
 							double t_vi = m_Op->GetVI(n, tpos[0], tpos[1], tpos[2]);

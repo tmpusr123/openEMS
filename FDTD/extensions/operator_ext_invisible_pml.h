@@ -30,6 +30,10 @@
  * of the sheet, extruded; so a line or strip that runs into the sheet runs on
  * into the PML, exactly as a signal layer runs into a boundary PML.
  *
+ * Where the sheet ends inside the domain (a port smaller than the cross-section),
+ * its rim is PEC: the E components along each rim face are held at zero, so the
+ * virtual PML is a PEC-lined pocket, consistent with the block it sits in.
+ *
  * Local index along the sheet normal ny, for a virtual PML of N cells:
  *   domain on the positive side (NormalSignPositive):
  *     l = 0 is the outer PEC wall, l = N is the sheet plane; the main grid's
@@ -83,6 +87,20 @@ protected:
 	double NodeDepth(unsigned int l) const {return m_normalSignPositive ? double(m_numCells) - l : double(l) - 1.0;}
 	double HalfDepth(unsigned int l) const {return m_normalSignPositive ? double(m_numCells) - l - 0.5 : double(l) - 0.5;}
 
+	//! True if the E component n at local position loc runs along a rim face of
+	//! the sheet that lies inside the domain (not on the domain boundary).
+	bool OnInnerRim(int n, const unsigned int* loc) const
+	{
+		for (int t=0; t<3; ++t)
+		{
+			if ((t==m_ny) || (t==n))
+				continue;
+			if ((m_innerRim[t][0] && (loc[t]==0)) || (m_innerRim[t][1] && (loc[t]==m_numLines[t]-1)))
+				return true;
+		}
+		return false;
+	}
+
 	//! Grading conductivity at a depth (in cells) into the virtual PML
 	double GradingKappa(double depthCells) const;
 
@@ -93,6 +111,7 @@ protected:
 	unsigned int	m_sheetX1[3];
 	unsigned int	m_numLines[3];		// virtual domain size, local indices
 	double			m_delta;			// cell size along ny, in meter
+	bool			m_innerRim[3][2];	// sheet rim (lower/upper) lies inside the domain
 
 	std::string		m_GradFunc;
 	FunctionParser*	m_GradingFunction;
