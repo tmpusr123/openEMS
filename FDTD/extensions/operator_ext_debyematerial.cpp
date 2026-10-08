@@ -25,6 +25,7 @@
 
 #include <vector>
 #include <string>
+#include <cstdlib>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -35,7 +36,17 @@ using std::endl;
 //! A Debye pole needs its relaxation time resolved by the timestep. The
 //! trapezoidal update stays stable up to dT/tau of about 0.35, independent of
 //! d_eps, so refuse a pole below three timesteps per relaxation time.
-#define DEBYE_MIN_TAU_PER_DT 3.0
+// Shortest relaxation time a pole may have, in timesteps; a faster pole is
+// skipped with a warning. Upstream chose 3 as an accuracy margin (the update is
+// stable for any tau). Measured on the CUDA engine against the analytic slab of
+// the SPECIFIED material (one pole, d_eps = 1 on eps_inf = 3, 1-9 GHz):
+// simulating the pole beats every alternative down to tau ~ 1 dT (max |T err|
+// 0.038 vs 0.078 for folding it into eps_inf at 2 dT, 0.036 vs 0.113 at 3 dT),
+// and SKIPPING it -- what a cutoff does -- is worst at every tau (~0.5). Below
+// ~1 dT folding wins (0.004 at 0.1 dT). So the cutoff sits at 1: poles that can
+// be simulated usefully are; Blit folds the faster ones before they get here.
+// The environment variable OPENEMS_DEBYE_MIN_TAU_PER_DT overrides it.
+#define DEBYE_MIN_TAU_PER_DT 1.0
 
 Operator_Ext_DebyeMaterial::Operator_Ext_DebyeMaterial(Operator* op) : Operator_Ext_Dispersive(op)
 {
@@ -120,6 +131,10 @@ bool Operator_Ext_DebyeMaterial::BuildExtension()
 	// push_back order EXACTLY (the engine indexes these arrays linearly), so the
 	// result is bit-identical to a serial build. The calls made here are the
 	// ones the parallel Lorentz build already makes per cell.
+	double min_tau_per_dt = DEBYE_MIN_TAU_PER_DT;
+	if (const char* env = getenv("OPENEMS_DEBYE_MIN_TAU_PER_DT"))
+		if (atof(env) > 0)
+			min_tau_per_dt = atof(env);
 	const int P = m_PoleCount;
 	const int _nx = (int)numLines[0];
 	std::vector< std::vector<unsigned int> > pl_pos(_nx);          // 3 per cell
@@ -191,7 +206,7 @@ bool Operator_Ext_DebyeMaterial::BuildExtension()
 						double t_relax = mat->GetEpsRelaxTimeWeighted(o,n,coord);
 						if ((d_eps<=0) || (t_relax<=0))
 							continue;
-						if (t_relax < DEBYE_MIN_TAU_PER_DT*dT)
+						if (t_relax < min_tau_per_dt*dT)
 						{
 							if (pl_warn_tau[_x]==0.0)
 							{
@@ -235,7 +250,7 @@ bool Operator_Ext_DebyeMaterial::BuildExtension()
 			cerr << "Operator_Ext_DebyeMaterial::BuildExtension(): Warning, "
 			     << "relaxation time (" << pl_warn_tau[_x] << "s) of material \""
 			     << pl_warn_name[_x] << "\" needs at least "
-			     << DEBYE_MIN_TAU_PER_DT << " timesteps (dT=" << dT
+			     << min_tau_per_dt << " timesteps (dT=" << dT
 			     << "s), skipping this pole..." << endl;
 			break;
 		}
