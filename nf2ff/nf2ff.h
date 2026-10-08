@@ -72,6 +72,17 @@ public:
 	//! getters / Write2HDF5, exactly as after AnalyseFile().
 	bool RecomputeForAngles(vector<float> theta, vector<float> phi);
 
+	//! With caching enabled: let AnalyseFile() only read and cache the planes,
+	//! without integrating them (results are invalid until RecomputeSubset()).
+	void SetCacheOnly(bool val) {m_cacheOnly=val;}
+
+	//! Like RecomputeForAngles(), but for a subset of the cached frequencies
+	//! (indices into the frequency list the planes were read with) and a new
+	//! phase center. Afterwards the getters / Write2HDF5 report exactly these
+	//! frequencies. Lets one near-field read serve every far-field frequency,
+	//! each with its own center and angle grids.
+	bool RecomputeSubset(vector<float> theta, vector<float> phi, vector<float> center, vector<size_t> freq_idx);
+
 	void SetRadius(float radius);
 	void SetPermittivity(vector<float> permittivity);
 	void SetPermeability(vector<float> permeability);
@@ -111,7 +122,14 @@ protected:
 	int m_MirrorType[3];             // mirror state, re-applied after recreate
 	float m_MirrorPos[3];
 	bool m_cacheEnabled;
+	bool m_cacheOnly;
 	vector<nf2ff_cached_plane> m_cachedPlanes;
+	vector<float> m_cacheFreq;       // frequency list the cached planes hold, in order
+	vector<float> m_cachePermittivity, m_cachePermeability;
+
+	//! rebuild the calc objects for (theta, phi, m_center) and the cached
+	//! frequencies idx, and replay the cached planes into them
+	bool Replay(vector<float> theta, vector<float> phi, const vector<size_t>& idx);
 
 	void ClearCache();
 };

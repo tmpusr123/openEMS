@@ -332,7 +332,9 @@ bool nf2ff_calc::AddMirrorPlane(int n, float **lines, unsigned int* numLines, co
 
 bool nf2ff_calc::AddPlane(float **lines, unsigned int* numLines, complex<float>**** E_field, complex<float>**** H_field, int MeshType)
 {
-	this->AddSinglePlane(lines, numLines, E_field, H_field, MeshType);
+	// A plane that can't be integrated must fail the whole far field instead of
+	// silently leaving that plane out (as upstream PR #233 does too).
+	bool ok = this->AddSinglePlane(lines, numLines, E_field, H_field, MeshType);
 
 	for (int n=0;n<3;++n)
 	{
@@ -341,7 +343,7 @@ bool nf2ff_calc::AddPlane(float **lines, unsigned int* numLines, complex<float>*
 		// check if a single mirror plane is on
 		if ((m_MirrorType[n]!=MIRROR_OFF) && (m_MirrorType[nP]==MIRROR_OFF) && (m_MirrorType[nPP]==MIRROR_OFF))
 		{
-			this->AddMirrorPlane(n, lines, numLines, E_field, H_field, MeshType);
+			ok &= this->AddMirrorPlane(n, lines, numLines, E_field, H_field, MeshType);
 
 			for (unsigned int i=0;i<numLines[n];++i)
 				lines[n][i] = 2.0*m_MirrorPos[n] - lines[n][i];
@@ -351,9 +353,9 @@ bool nf2ff_calc::AddPlane(float **lines, unsigned int* numLines, complex<float>*
 		//check if two planes are on 
 		else if ((m_MirrorType[n]==MIRROR_OFF) && (m_MirrorType[nP]!=MIRROR_OFF) && (m_MirrorType[nPP]!=MIRROR_OFF))
 		{
-			this->AddMirrorPlane(nP, lines, numLines, E_field, H_field, MeshType);
-			this->AddMirrorPlane(nPP, lines, numLines, E_field, H_field, MeshType);
-			this->AddMirrorPlane(nP, lines, numLines, E_field, H_field, MeshType);
+			ok &= this->AddMirrorPlane(nP, lines, numLines, E_field, H_field, MeshType);
+			ok &= this->AddMirrorPlane(nPP, lines, numLines, E_field, H_field, MeshType);
+			ok &= this->AddMirrorPlane(nP, lines, numLines, E_field, H_field, MeshType);
       
 			for (unsigned int i=0;i<numLines[nPP];++i)
 				lines[nPP][i] = 2.0*m_MirrorPos[nPP] - lines[nPP][i];
@@ -364,13 +366,13 @@ bool nf2ff_calc::AddPlane(float **lines, unsigned int* numLines, complex<float>*
 	// check if all planes are on
 	if ((m_MirrorType[0]!=MIRROR_OFF) && (m_MirrorType[1]!=MIRROR_OFF) && (m_MirrorType[2]!=MIRROR_OFF))
 	{
-		this->AddMirrorPlane(0, lines, numLines, E_field, H_field, MeshType);
-		this->AddMirrorPlane(1, lines, numLines, E_field, H_field, MeshType);
-		this->AddMirrorPlane(0, lines, numLines, E_field, H_field, MeshType);
-		this->AddMirrorPlane(2, lines, numLines, E_field, H_field, MeshType);
-		this->AddMirrorPlane(0, lines, numLines, E_field, H_field, MeshType);
-		this->AddMirrorPlane(1, lines, numLines, E_field, H_field, MeshType);
-		this->AddMirrorPlane(0, lines, numLines, E_field, H_field, MeshType);
+		ok &= this->AddMirrorPlane(0, lines, numLines, E_field, H_field, MeshType);
+		ok &= this->AddMirrorPlane(1, lines, numLines, E_field, H_field, MeshType);
+		ok &= this->AddMirrorPlane(0, lines, numLines, E_field, H_field, MeshType);
+		ok &= this->AddMirrorPlane(2, lines, numLines, E_field, H_field, MeshType);
+		ok &= this->AddMirrorPlane(0, lines, numLines, E_field, H_field, MeshType);
+		ok &= this->AddMirrorPlane(1, lines, numLines, E_field, H_field, MeshType);
+		ok &= this->AddMirrorPlane(0, lines, numLines, E_field, H_field, MeshType);
 
 		for (unsigned int i=0;i<numLines[2];++i)
 			lines[2][i] = 2.0*m_MirrorPos[2] - lines[2][i];
@@ -380,7 +382,9 @@ bool nf2ff_calc::AddPlane(float **lines, unsigned int* numLines, complex<float>*
 	//cleanup E- & H-Fields
 	Delete_N_3DArray(E_field,numLines);
 	Delete_N_3DArray(H_field,numLines);
-	return true;
+	if (!ok)
+		cerr << "nf2ff_calc::AddPlane: Error, a (mirrored) plane could not be added -- far field invalid" << endl;
+	return ok;
 }
 
 bool nf2ff_calc::AddSinglePlane(float **lines, unsigned int* numLines, complex<float>**** E_field, complex<float>**** H_field, int MeshType)

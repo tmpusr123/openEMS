@@ -35,6 +35,9 @@ public:
 
 	virtual void ShowStat(std::ostream &ostr) const;
 
+	//! true if any cell of this extension lies in the box [start, start+lines)
+	bool AnyCellInBox(const unsigned int start[3], const unsigned int lines[3]) const;
+
 protected:
 	Operator_Ext_Dispersive(Operator* op);
 	//! Copy constructor

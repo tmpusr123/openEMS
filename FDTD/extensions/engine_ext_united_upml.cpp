@@ -22,6 +22,13 @@
 Engine_Ext_United_UPML::Engine_Ext_United_UPML(std::vector<Operator_Ext_UPML *> *op_ext_upml_list) : Engine_Extension(NULL)
 {
     m_Op_UPML_List = op_ext_upml_list;
+    // Same priority as the CPU engine's per-block Engine_Ext_UPML: the UPML
+    // pre-hook must be the last thing before the core update and its post-hook
+    // the first after it (Engine runs pre-hooks in reverse priority order).
+    // It used to keep the default 0, so on the GPU its hooks were ordered
+    // differently from the CPU reference relative to TFSF and to the other
+    // priority-0 extensions (dispersive, lumped RLC), with ties left to the sort.
+    m_Priority = ENG_EXT_PRIO_UPML;
 
 }
 

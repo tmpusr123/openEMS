@@ -20,7 +20,9 @@
 
 #include "processfields.h"
 
-class ProcessFieldsFD : public ProcessFields
+#include "field_gather_backend.h"
+
+class ProcessFieldsFD : public ProcessFields, public FieldDFTClient
 {
 public:
 	ProcessFieldsFD(Engine_Interface_Base* eng_if);
@@ -33,8 +35,21 @@ public:
 	virtual int Process();
 	virtual void PostProcess();
 
+	virtual bool DeviceDFTFactors(unsigned int ts, std::vector<std::complex<float> >& factors) const;
+
 protected:
 	virtual void DumpFDData();
+
+	//! weight of the sample taken at time T, per frequency (shared by the host
+	//! and the device DFT so both use bit-identical factors)
+	std::complex<float> DFTFactor(size_t n, double T) const;
+
+	// --- device-resident running DFT (CUDA engine) -------------------------
+	void SetupDeviceDFT();
+	void FetchDeviceDFT();
+	bool m_device_dft_tried;
+	bool m_device_dft;          //!< sums live on the device (gather id m_gpu_dump_id)
+	unsigned int m_FD_SampleCount_ts0; //!< samples taken at ts==0 (zero fields, never sent to the device)
 
 	//! frequency domain field storage
 	std::vector<std::complex<float>****> m_FD_Fields;

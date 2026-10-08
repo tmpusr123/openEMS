@@ -73,7 +73,10 @@ void Operator_Ext_UPML::SetRange(const unsigned int start[3], const unsigned int
 	for (int n=0; n<3; ++n)
 	{
 		m_StartPos[n]=start[n];
-		m_numLines[n]=stop[n]-start[n]+1;
+		// Opposing PML slabs can leave an empty interior (start > stop). Keep an
+		// explicit empty range instead of underflowing the unsigned line count
+		// (BuildExtension would then loop to UINT_MAX). From luikore 39e42e4.
+		m_numLines[n] = (stop[n] >= start[n]) ? (stop[n]-start[n]+1) : 0;
 	}
 }
 
@@ -392,6 +395,10 @@ bool Operator_Ext_UPML::BuildExtension()
 	ii.Init("ii", m_numLines);
 	iifo.Init("iifo", m_numLines);
 	iifn.Init("iifn", m_numLines);
+
+	// an empty range (see SetRange) is a valid no-op
+	if (!m_numLines[0] || !m_numLines[1] || !m_numLines[2])
+		return true;
 
 	double dT = m_Op->GetTimestep();
 

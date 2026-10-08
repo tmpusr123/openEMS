@@ -216,6 +216,7 @@ void Engine_Ext_United_UPML::SetEngine(Engine* eng)
         blocks[b].coeff_table = m_d_coeff_table;
         checkCuda(cudaMemcpy(m_d_blks + b, &blocks[b], sizeof(upml_block_t), cudaMemcpyHostToDevice));
     }
+    m_h_blks = blocks;
 }
 
 __device__
@@ -258,6 +259,7 @@ void PreVoltageUpdateKernel(FDTD_FLOAT *d_volt, const upml_block_t *ublk, const 
 void Engine_Ext_United_UPML::DoPreVoltageUpdates(int threadID)
 {
     if (threadID != 0)  return;
+    if (m_fused_main) return;   // done inside the engine's update kernels
 
     if (m_mgpu) {
         Engine_cuda_mgpu *mg = static_cast<Engine_cuda_mgpu*>(m_Eng);
@@ -338,6 +340,7 @@ void FusedPostVoltPreCurrKernel(FDTD_FLOAT *d_volt, FDTD_FLOAT *d_curr,
 void Engine_Ext_United_UPML::DoPostVoltageUpdates(int threadID)
 {
     if (threadID != 0)  return;
+    if (m_fused_main) return;   // done inside the engine's update kernels
 
     if (m_mgpu) {
         Engine_cuda_mgpu *mg = static_cast<Engine_cuda_mgpu*>(m_Eng);
@@ -408,6 +411,7 @@ void PreCurrentUpdateKernel(FDTD_FLOAT *d_curr, const upml_block_t *ublk, const 
 void Engine_Ext_United_UPML::DoPreCurrentUpdates(int threadID)
 {
     if (threadID != 0)  return;
+    if (m_fused_main) return;   // done inside the engine's update kernels
 
     if (m_mgpu) {
         Engine_cuda_mgpu *mg = static_cast<Engine_cuda_mgpu*>(m_Eng);
@@ -460,6 +464,7 @@ void PostCurrentUpdateKernel(FDTD_FLOAT *d_curr, const upml_block_t *ublk, const
 void Engine_Ext_United_UPML::DoPostCurrentUpdates(int threadID)
 {
     if (threadID != 0)  return;
+    if (m_fused_main) return;   // done inside the engine's update kernels
 
     if (m_mgpu) {
         Engine_cuda_mgpu *mg = static_cast<Engine_cuda_mgpu*>(m_Eng);

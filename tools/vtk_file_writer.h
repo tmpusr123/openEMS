@@ -69,6 +69,10 @@ public:
 
 	virtual bool Write();
 
+	//! A new writer with this one's mesh, file type and flags but no fields --
+	//! lets independent frames be written concurrently (one writer per thread).
+	VTK_File_Writer* CloneEmpty() const;
+
 	virtual bool WriteASCII();
 	virtual bool WriteXML();
 

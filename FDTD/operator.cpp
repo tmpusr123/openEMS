@@ -196,23 +196,37 @@ double Operator::GetDiscDelta(int n, unsigned int pos, bool dualMesh) const
 {
 	if ((n<0) || (n>2)) return 0.0;
 	if (pos>=numLines[n]) return 0.0;
-	double delta=0;
+
+	const double* lines = discLines[n];
+
 	if (dualMesh==false)
 	{
 		if (pos<numLines[n]-1)
-			delta = GetDiscLine(n,pos+1,false) - GetDiscLine(n,pos,false);
-		else
-			delta = GetDiscLine(n,pos,false) - GetDiscLine(n,pos-1,false);
-		return delta;
-	}
-	else
-	{
+			return lines[pos+1] - lines[pos];
 		if (pos>0)
-			delta = GetDiscLine(n,pos,true) - GetDiscLine(n,pos-1,true);
-		else
-			delta = GetDiscLine(n,1,false) - GetDiscLine(n,0,false);
-		return delta;
+			return lines[pos] - lines[pos-1];
+
+		// Preserve the original behavior for a single-line mesh.
+		return lines[pos];
 	}
+
+	if (pos==0)
+	{
+		if (numLines[n]>1)
+			return lines[1] - lines[0];
+
+		// Preserve the original behavior for a single-line mesh.
+		return -lines[0];
+	}
+
+	if (pos<numLines[n]-1)
+		return 0.5*(lines[pos] + lines[pos+1])
+		     - 0.5*(lines[pos-1] + lines[pos]);
+
+	// Last dual-mesh position: GetDiscLine() extrapolates the
+	// final dual node beyond the field domain.
+	return (lines[pos] + 0.5*(lines[pos] - lines[pos-1]))
+	     - 0.5*(lines[pos-1] + lines[pos]);
 }
 
 bool Operator::GetYeeCoords(int ny, unsigned int pos[3], double* coords, bool dualMesh) const
@@ -2256,6 +2270,67 @@ double min(double* val, unsigned int count)
 }
 
 //Berechnung nach Andreas Rennings Dissertation 2008, Seite 76 ff, Formel 4.77 ff
+double Operator::CalcNodeTimestep_Var3(int n, const unsigned int pos[3]) const
+{
+	int nP = (n+1)%3;
+	int nPP = (n+2)%3;
+	AdrOp lop(MainOp);
+	lop.SetReflection2Cell();
+	double wqp, wt1, wt2;
+	double wt_4[4];
+	unsigned int ipos;
+
+	lop.ResetShift();
+	ipos = lop.SetPos(pos[0],pos[1],pos[2]);
+	wqp  = 1/(EC_L[nPP][ipos]*EC_C[n][lop.GetShiftedPos(nP ,1)]) + 1/(EC_L[nPP][ipos]*EC_C[n][ipos]);
+	wqp += 1/(EC_L[nP ][ipos]*EC_C[n][lop.GetShiftedPos(nPP,1)]) + 1/(EC_L[nP ][ipos]*EC_C[n][ipos]);
+	ipos = lop.Shift(nP,-1);
+	wqp += 1/(EC_L[nPP][ipos]*EC_C[n][lop.GetShiftedPos(nP ,1)]) + 1/(EC_L[nPP][ipos]*EC_C[n][ipos]);
+	ipos = lop.Shift(nPP,-1);
+	wqp += 1/(EC_L[nP ][ipos]*EC_C[n][lop.GetShiftedPos(nPP,1)]) + 1/(EC_L[nP ][ipos]*EC_C[n][ipos]);
+
+	lop.ResetShift();
+	ipos = lop.SetPos(pos[0],pos[1],pos[2]);
+	wt_4[0] = 1/(EC_L[nPP][ipos] *EC_C[nP ][ipos]);
+	wt_4[1] = 1/(EC_L[nPP][lop.GetShiftedPos(nP ,-1)] *EC_C[nP ][ipos]);
+	wt_4[2] = 1/(EC_L[nP ][ipos] *EC_C[nPP][ipos]);
+	wt_4[3] = 1/(EC_L[nP ][lop.GetShiftedPos(nPP,-1)] *EC_C[nPP][ipos]);
+	wt1 = wt_4[0]+wt_4[1]+wt_4[2]+wt_4[3] - 2*min(wt_4,4);
+
+	lop.ResetShift();
+	ipos = lop.SetPos(pos[0],pos[1],pos[2]);
+	wt_4[0] = 1/(EC_L[nPP][ipos] *EC_C[nP ][lop.GetShiftedPos(n,1)]);
+	wt_4[1] = 1/(EC_L[nPP][lop.GetShiftedPos(nP ,-1)] *EC_C[nP ][lop.GetShiftedPos(n,1)]);
+	wt_4[2] = 1/(EC_L[nP ][ipos] *EC_C[nPP][lop.GetShiftedPos(n,1)]);
+	wt_4[3] = 1/(EC_L[nP ][lop.GetShiftedPos(nPP,-1)] *EC_C[nPP][lop.GetShiftedPos(n,1)]);
+	wt2 = wt_4[0]+wt_4[1]+wt_4[2]+wt_4[3] - 2*min(wt_4,4);
+
+	double newT = 2/sqrt( wqp + wt1 + wt2 );
+	return (newT>0.0) ? newT : 1e200;
+}
+
+double Operator::MinNodeTimestepAround(const unsigned int pos[3]) const
+{
+	double tmin = 1e200;
+	unsigned int p[3];
+	for (int dx=-1; dx<=1; ++dx)
+		for (int dy=-1; dy<=1; ++dy)
+			for (int dz=-1; dz<=1; ++dz)
+			{
+				int q[3] = {(int)pos[0]+dx, (int)pos[1]+dy, (int)pos[2]+dz};
+				bool ok = true;
+				for (int a=0; a<3; ++a)
+				{
+					if (q[a]<0 || q[a]>=(int)numLines[a]) ok = false;
+					p[a] = (unsigned int)q[a];
+				}
+				if (!ok) continue;
+				for (int n=0; n<3; ++n)
+					tmin = std::min(tmin, CalcNodeTimestep_Var3(n,p));
+			}
+	return tmin;
+}
+
 double Operator::CalcTimestep_Var3()
 {
 	dT=1e200;

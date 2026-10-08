@@ -57,6 +57,7 @@ Operator_Ext_Dispersive::~Operator_Ext_Dispersive()
 		delete[] m_LM_pos[n][0];
 		delete[] m_LM_pos[n][1];
 		delete[] m_LM_pos[n][2];
+		delete[] m_LM_pos[n];
 	}
 	delete[] m_LM_pos;
 	m_LM_pos=NULL;
@@ -75,4 +76,24 @@ void Operator_Ext_Dispersive::ShowStat(ostream &ostr)  const
 		ostr << " N=" << i << ":\t Voltage ADE is \t: " << On_Off[m_volt_ADE_On[i]] << endl;
 		ostr << " N=" << i << ":\t Current ADE is \t: " << On_Off[m_curr_ADE_On[i]] << endl;
 	}
+}
+
+bool Operator_Ext_Dispersive::AnyCellInBox(const unsigned int start[3], const unsigned int lines[3]) const
+{
+	if (m_LM_pos==NULL) return false;
+	for (size_t o=0; o<m_LM_Count.size(); ++o)
+	{
+		if (m_LM_pos[o]==NULL) continue;
+		for (unsigned int i=0; i<m_LM_Count.at(o); ++i)
+		{
+			bool in = true;
+			for (int a=0; a<3 && in; ++a)
+			{
+				unsigned int p = m_LM_pos[o][a][i];
+				in = (p>=start[a]) && (p<start[a]+lines[a]);
+			}
+			if (in) return true;
+		}
+	}
+	return false;
 }

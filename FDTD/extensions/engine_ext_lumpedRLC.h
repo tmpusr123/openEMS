@@ -46,7 +46,7 @@ public:
 	// Geometry + coefficients per element, packed AoS and uploaded once.
 	struct rlc_cell {
 		int x, y, z, dir;
-		FDTD_FLOAT ilv, i2v, vv2, vj1, vj2, vvd, ib0, b1, b2;
+		FDTD_FLOAT ilv, i2v, dJdV, aV, aQ, aJ, vcd, vvd;
 	};
 	virtual void SetEngine(Engine* eng);
 	virtual bool IsCUDACapable() const {return true;}
@@ -62,6 +62,7 @@ protected:
 
 	// Array setup: volt_C_ADE[mesh_pos]
 	FDTD_FLOAT *v_Il;		// Container for current on inductor- Parallel RLC
+	FDTD_FLOAT *v_q;		// Container for the series charge q
 
 	FDTD_FLOAT **v_Vdn;		// Container for nodal vd at [n],[n-1],[n-2]
 	FDTD_FLOAT **v_Jn;		// Container for nodal J at [n],[n-1],[n-2]
@@ -72,9 +73,9 @@ protected:
 	rlc_cell   *d_cells = NULL;   // uploaded geometry+coeffs (RLC_count)
 	FDTD_FLOAT *d_Il  = NULL;     // running inductor current (parallel RLC)
 	FDTD_FLOAT *d_Vd1 = NULL;     // Vd[n-1]
-	FDTD_FLOAT *d_Vd2 = NULL;     // Vd[n-2]
+	FDTD_FLOAT *d_Vd2 = NULL;     // series charge q (was Vd[n-2] before the state-space form)
 	FDTD_FLOAT *d_J1  = NULL;     // J[n-1]
-	FDTD_FLOAT *d_J2  = NULL;     // J[n-2]
+	FDTD_FLOAT *d_J2  = NULL;     // unused since the state-space form
 
 	// multi-GPU: RLC cells partitioned by owning slab (x translated to
 	// slab-local incl. ghost offset). The recurrence is cell-local (touches

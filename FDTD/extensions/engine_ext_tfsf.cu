@@ -19,6 +19,8 @@
 
 #include <cuda_runtime.h>
 #include <vector>
+#include <unordered_map>
+#include <algorithm>
 #include "hemi/grid_stride_range.h"
 #include "tools/cuda/check.h"
 
@@ -42,6 +44,8 @@ __global__
 void tfsfKernel(FDTD_FLOAT* field, dim3 dim, const tfsf_tap* taps, int N,
 	const FDTD_FLOAT* signal, const int* d_numTS, int length, int period)
 {
+	// One tap layer: no two taps of the launch share a field cell (see
+	// layerTaps), so a plain add is race-free -- no atomics.
 	int numTS = *d_numTS;
 	for (auto k : hemi::grid_stride_range(0, N)) {
 		tfsf_tap t = taps[k];
@@ -50,11 +54,38 @@ void tfsfKernel(FDTD_FLOAT* field, dim3 dim, const tfsf_tap* taps, int N,
 		int i1 = tfsf_delay_idx(numTS, t.delay + 1, length, period);
 		FDTD_FLOAT val = (FDTD_FLOAT)(1.0 - t.delta) * t.amp * signal[i0]
 		               +               t.delta        * t.amp * signal[i1];
-		// Box edges/corners are shared by two face loops that inject into the
-		// same cell+component; the host accumulates them sequentially, so we
-		// must atomic-add here to avoid a lost-update race between those taps.
-		atomicAdd(&field[flat], val);
+		field[flat] += val;
 	}
+}
+
+// Box edges and corners are shared by two or three face loops that inject into
+// the same cell+component; the host adds them one after another. Sort the taps
+// stably into layers -- layer k holds every cell's k-th tap in host order --
+// so each layer launch is race-free and the layers, run in order, reproduce
+// the host's per-cell summation order exactly (an atomic add made the result
+// depend on thread scheduling, ~1e-6 run to run).
+static void layerTaps(std::vector<tfsf_tap>& taps, const dim3& dim, std::vector<int>& layers)
+{
+	std::unordered_map<long long, int> seen;
+	std::vector<int> layer(taps.size());
+	int nlayers = 0;
+	for (size_t k = 0; k < taps.size(); ++k)
+	{
+		const tfsf_tap& t = taps[k];
+		long long flat = (((long long)t.x * dim.y + t.y) * dim.z + t.z) * 3 + t.comp;
+		layer[k] = seen[flat]++;
+		nlayers = std::max(nlayers, layer[k] + 1);
+	}
+	std::vector<tfsf_tap> sorted;
+	sorted.reserve(taps.size());
+	layers.assign(1, 0);
+	for (int l = 0; l < nlayers; ++l)
+	{
+		for (size_t k = 0; k < taps.size(); ++k)
+			if (layer[k] == l) sorted.push_back(taps[k]);
+		layers.push_back((int)sorted.size());
+	}
+	taps.swap(sorted);
 }
 
 void Engine_Ext_TFSF::SetEngine(Engine* eng)
@@ -138,6 +169,9 @@ void Engine_Ext_TFSF::SetEngine(Engine* eng)
 		}
 	}
 
+	dim3 dim = static_cast<Engine_cuda*>(eng)->GetDeviceDimData();
+	layerTaps(volt_taps, dim, m_volt_layers);
+	layerTaps(curr_taps, dim, m_curr_layers);
 	m_n_volt_taps = (int)volt_taps.size();
 	m_n_curr_taps = (int)curr_taps.size();
 
@@ -163,21 +197,27 @@ void Engine_Ext_TFSF::SetEngine(Engine* eng)
 void Engine_Ext_TFSF::DoPostVoltageUpdatesCuda(Engine_cuda* eng)
 {
 	if (m_n_volt_taps <= 0) return;
-	int blocks = (m_n_volt_taps + TFSF_THREADS - 1) / TFSF_THREADS;
 	// volt field uses the CURRENT signal (an H-field is added)
-	tfsfKernel<<<blocks, TFSF_THREADS>>>(
-		eng->GetDeviceVoltData(), eng->GetDeviceDimData(),
-		d_volt_taps, m_n_volt_taps, d_sig_curr, eng->GetDeviceNumTS(),
-		m_sig_length, m_period);
+	for (size_t l = 0; l + 1 < m_volt_layers.size(); ++l) {
+		int n = m_volt_layers[l + 1] - m_volt_layers[l];
+		int blocks = (n + TFSF_THREADS - 1) / TFSF_THREADS;
+		tfsfKernel<<<blocks, TFSF_THREADS>>>(
+			eng->GetDeviceVoltData(), eng->GetDeviceDimData(),
+			d_volt_taps + m_volt_layers[l], n, d_sig_curr, eng->GetDeviceNumTS(),
+			m_sig_length, m_period);
+	}
 }
 
 void Engine_Ext_TFSF::DoPostCurrentUpdatesCuda(Engine_cuda* eng)
 {
 	if (m_n_curr_taps <= 0) return;
-	int blocks = (m_n_curr_taps + TFSF_THREADS - 1) / TFSF_THREADS;
 	// curr field uses the VOLTAGE signal (an E-field is added)
-	tfsfKernel<<<blocks, TFSF_THREADS>>>(
-		eng->GetDeviceCurrData(), eng->GetDeviceDimData(),
-		d_curr_taps, m_n_curr_taps, d_sig_volt, eng->GetDeviceNumTS(),
-		m_sig_length, m_period);
+	for (size_t l = 0; l + 1 < m_curr_layers.size(); ++l) {
+		int n = m_curr_layers[l + 1] - m_curr_layers[l];
+		int blocks = (n + TFSF_THREADS - 1) / TFSF_THREADS;
+		tfsfKernel<<<blocks, TFSF_THREADS>>>(
+			eng->GetDeviceCurrData(), eng->GetDeviceDimData(),
+			d_curr_taps + m_curr_layers[l], n, d_sig_volt, eng->GetDeviceNumTS(),
+			m_sig_length, m_period);
+	}
 }

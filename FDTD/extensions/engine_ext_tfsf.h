@@ -19,6 +19,7 @@
 #define ENGINE_EXT_TFSF_H
 
 #include "engine_extension.h"
+#include <vector>
 #include "FDTD/engine.h"
 #include "FDTD/operator.h"
 #include "engine_extension_dispatcher.h"
@@ -64,6 +65,9 @@ protected:
 	FDTD_FLOAT *d_sig_curr = NULL;    // current signal (for volt taps)
 	int         m_sig_length = 0;
 	int         m_period = 0;         // signal period in timesteps (0 = non-periodic)
+	// Tap layers: offsets into the tap lists such that no two taps of one layer
+	// hit the same field cell; layers run in order (see SetEngine).
+	std::vector<int> m_volt_layers, m_curr_layers;
 #endif
 };
 

@@ -1,8 +1,9 @@
 /*
-*	CUDA port of the lumped-RLC ADE extension. Mirrors the host recurrence in
-*	engine_ext_lumpedRLC.cpp exactly, but as on-device kernels so it is captured
-*	into the per-timestep CUDA graph. The host's pointer-rotated Vd/J history is
-*	linearised into explicit device slots (Vd1=Vd[n-1], Vd2=Vd[n-2], etc.).
+*	CUDA port of the lumped-RLC ADE extension. Mirrors the host update in
+*	engine_ext_lumpedRLC.cpp, but as on-device kernels so it is captured into
+*	the per-timestep CUDA graph. The host's pointer-rotated Vd/J history is
+*	linearised into explicit device slots (Vd1=Vd[n-1], J1=J[n-1]; the Vd2
+*	slot holds the series charge q of the state-space form).
 *	No host-side field access.
 */
 
@@ -29,28 +30,29 @@ void rlcPreKernel(const rlc_cell* c, FDTD_FLOAT* Il, const FDTD_FLOAT* Vd1, int 
 }
 
 // Apply (after core update): read the engine node voltage, form Vd[n] and J[n]
-// from the RLC recurrence, write it back, then shift the history slots.
+// with the trapezoidal state-space update (same as the host), write it back,
+// then advance the state. Slots: Vd1 = Vd[n-1], J1 = J[n-1], Q = series charge.
 __global__
 void rlcApplyKernel(FDTD_FLOAT* volt, dim3 dim, const rlc_cell* c,
-	const FDTD_FLOAT* Il, FDTD_FLOAT* Vd1, FDTD_FLOAT* Vd2,
-	FDTD_FLOAT* J1, FDTD_FLOAT* J2, int N)
+	const FDTD_FLOAT* Il, FDTD_FLOAT* Vd1, FDTD_FLOAT* Q,
+	FDTD_FLOAT* J1, FDTD_FLOAT dT_half, int N)
 {
 	for (auto k : hemi::grid_stride_range(0, N)) {
 		rlc_cell e = c[k];
 		int flat = (e.x * dim.y * dim.z + e.y * dim.z + e.z) * 3 + e.dir;
 
-		FDTD_FLOAT il = Il[k], vd1 = Vd1[k], vd2 = Vd2[k], j1 = J1[k], j2 = J2[k];
+		FDTD_FLOAT il = Il[k], vd1 = Vd1[k], q = Q[k], j1 = J1[k];
 		FDTD_FLOAT Veng = volt[flat];
 
-		// exact host associativity: ((((Veng - Il) + vv2*Vd2) + vj1*J1) + vj2*J2)
-		FDTD_FLOAT Vd_n = e.vvd * (Veng - il + e.vv2 * vd2 + e.vj1 * j1 + e.vj2 * j2);
-		FDTD_FLOAT J_n  = e.ib0 * (Vd_n - vd2) - (e.b1 * e.ib0) * j1 - (e.b2 * e.ib0) * j2;
+		FDTD_FLOAT B    = e.aV * vd1 + e.aQ * q + e.aJ * j1;
+		FDTD_FLOAT Vd_n = e.vvd * (Veng - il - e.vcd * (B + j1));
+		FDTD_FLOAT J_n  = e.dJdV * Vd_n + B;
 
 		volt[flat] = Vd_n;
 
-		// shift history for the next timestep (reads done above)
-		Vd2[k] = vd1;  Vd1[k] = Vd_n;
-		J2[k]  = j1;   J1[k]  = J_n;
+		Vd1[k] = Vd_n;
+		J1[k]  = J_n;
+		Q[k]   = q + dT_half * (J_n + j1);
 	}
 }
 
@@ -80,10 +82,9 @@ void Engine_Ext_LumpedRLC::SetEngineMg(Engine_cuda_mgpu* mg)
 			h.z   = (int)op->v_RLC_pos[2][i];
 			h.dir = op->v_RLC_dir[i];
 			h.ilv = op->v_RLC_ilv[i];  h.i2v = op->v_RLC_i2v[i];
-			h.vv2 = op->v_RLC_vv2[i];  h.vj1 = op->v_RLC_vj1[i];
-			h.vj2 = op->v_RLC_vj2[i];  h.vvd = op->v_RLC_vvd[i];
-			h.ib0 = op->v_RLC_ib0[i];  h.b1  = op->v_RLC_b1[i];
-			h.b2  = op->v_RLC_b2[i];
+			h.dJdV = op->v_RLC_dJdV[i]; h.aV  = op->v_RLC_aV[i];
+			h.aQ   = op->v_RLC_aQ[i];   h.aJ  = op->v_RLC_aJ[i];
+			h.vcd  = op->v_RLC_vcd[i];  h.vvd = op->v_RLC_vvd[i];
 			cells.push_back(h);
 		}
 		mg_count[g] = (int)cells.size();
@@ -123,7 +124,7 @@ void Engine_Ext_LumpedRLC::Apply2VoltagesMg(Engine_cuda_mgpu* mg)
 		int blocks = (mg_count[g] + RLC_THREADS - 1) / RLC_THREADS;
 		rlcApplyKernel<<<blocks, RLC_THREADS, 0, c.stream>>>(
 			c.d_volt, c.local_dim, mg_cells[g],
-			mg_Il[g], mg_Vd1[g], mg_Vd2[g], mg_J1[g], mg_J2[g], mg_count[g]);
+			mg_Il[g], mg_Vd1[g], mg_Vd2[g], mg_J1[g], m_Op_Ext_RLC->m_dT_half, mg_count[g]);
 	}
 }
 
@@ -152,13 +153,12 @@ void Engine_Ext_LumpedRLC::SetEngine(Engine* eng)
 		h[i].dir = op->v_RLC_dir[i];
 		h[i].ilv = op->v_RLC_ilv[i];
 		h[i].i2v = op->v_RLC_i2v[i];
-		h[i].vv2 = op->v_RLC_vv2[i];
-		h[i].vj1 = op->v_RLC_vj1[i];
-		h[i].vj2 = op->v_RLC_vj2[i];
-		h[i].vvd = op->v_RLC_vvd[i];
-		h[i].ib0 = op->v_RLC_ib0[i];
-		h[i].b1  = op->v_RLC_b1[i];
-		h[i].b2  = op->v_RLC_b2[i];
+		h[i].dJdV = op->v_RLC_dJdV[i];
+		h[i].aV   = op->v_RLC_aV[i];
+		h[i].aQ   = op->v_RLC_aQ[i];
+		h[i].aJ   = op->v_RLC_aJ[i];
+		h[i].vcd  = op->v_RLC_vcd[i];
+		h[i].vvd  = op->v_RLC_vvd[i];
 	}
 	checkCuda(cudaMalloc(&d_cells, N * sizeof(rlc_cell)));
 	checkCuda(cudaMemcpy(d_cells, h, N * sizeof(rlc_cell), cudaMemcpyHostToDevice));
@@ -198,5 +198,5 @@ void Engine_Ext_LumpedRLC::Apply2VoltagesCuda(Engine_cuda* eng)
 	int blocks = (N + RLC_THREADS - 1) / RLC_THREADS;
 	rlcApplyKernel<<<blocks, RLC_THREADS>>>(
 		eng->GetDeviceVoltData(), eng->GetDeviceDimData(), d_cells,
-		d_Il, d_Vd1, d_Vd2, d_J1, d_J2, N);
+		d_Il, d_Vd1, d_Vd2, d_J1, m_Op_Ext_RLC->m_dT_half, N);
 }

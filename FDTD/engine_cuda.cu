@@ -20,12 +20,22 @@
 #include <cstring>
 #include <cstdlib>
 #include <thread>
+#include <climits>
+#include <algorithm>
+#include <complex>
 
 #include "hemi/grid_stride_range.h"
 #include "hemi/launch.h"
 
 #include "tools/cuda/check.h"
 #include "engine_cuda_coeff.h"
+#include "extensions/engine_ext_united_upml.h"
+#include "extensions/engine_ext_excitation.h"
+#include "extensions/engine_ext_lumpedRLC.h"
+#include "extensions/engine_ext_tfsf.h"
+#include "extensions/engine_ext_steadystate.h"
+#include "extensions/engine_ext_dispersive.h"
+#include "extensions/operator_ext_dispersive.h"
 
 using namespace std;
 
@@ -40,7 +50,8 @@ using namespace std;
 
 
 
-// Kernel for voltage updates with flat arrays
+// Kernel for voltage updates with flat arrays (legacy launch shape, kept
+// verbatim for A/B: OPENEMS_CUDA_LEGACY_KERNELS=1)
 template<typename IdxT>
 __global__
 void updateVoltagesKernel(FDTD_FLOAT * __restrict__ volt, const FDTD_FLOAT * __restrict__ curr, const IdxT * __restrict__ op_index, const FDTD_FLOAT * __restrict__ vv_vi_table, int N, dim3 dim)
@@ -131,6 +142,222 @@ void updateCurrentsKernel(FDTD_FLOAT * __restrict__ curr, const FDTD_FLOAT * __r
             // update z
             i[2] = i[2] * iiiv[2].x + iiiv[2].y;
         }
+    }
+}
+
+
+// 2-D tiled launch over a box [lo, hi) of cells: threads run along z (32)
+// and y (8), one x-plane per blockIdx.z -- no integer division per cell and
+// y-neighbour reuse inside a tile. Same per-cell arithmetic as above.
+#define TILE_Z 32
+#define TILE_Y 8
+template<typename IdxT>
+__global__
+void updateVoltagesBoxKernel(FDTD_FLOAT * __restrict__ volt, const FDTD_FLOAT * __restrict__ curr, const IdxT * __restrict__ op_index, const FDTD_FLOAT * __restrict__ vv_vi_table, dim3 dim, uint3 lo, uint3 hi)
+{
+    int z = lo.z + blockIdx.x * TILE_Z + threadIdx.x;
+    int y = lo.y + blockIdx.y * TILE_Y + threadIdx.y;
+    int x = lo.x + blockIdx.z;
+    if (z >= (int)hi.z || y >= (int)hi.y) return;
+    int cell = (x * dim.y + y) * dim.z + z;
+    {
+        // per-cell body identical to updateVoltagesKernel
+        int offs = cell * 3;
+
+        const FDTD_FLOAT* ix = curr + ((x != 0) ? offs - dim.y * dim.z * 3 : offs);
+        const FDTD_FLOAT* iy = curr + ((y != 0) ? offs - dim.z * 3 : offs);
+        const FDTD_FLOAT* iz = curr + ((z != 0) ? offs - 3 : offs);
+
+        float2 vvvi[3];
+        const FDTD_FLOAT* c = vv_vi_table + (size_t)op_index[cell] * 6;
+
+        vvvi[0] = *(float2*)(c);
+        vvvi[1] = *(float2*)(c + 2);
+        vvvi[2] = *(float2*)(c + 4);
+
+        FDTD_FLOAT i[3];
+        const FDTD_FLOAT *p = curr + offs;
+        i[0]= *p++;
+        i[1] = *p++;
+        i[2] = *p++;
+
+        vvvi[0].y *= (i[2] - iy[2] - i[1] + iz[1]);
+        vvvi[1].y *= (i[0] - iz[0] - i[2] + ix[2]);
+        vvvi[2].y *= (i[1] -ix[1] - i[0] + iy[0]); 
+
+        FDTD_FLOAT* v= volt + offs;
+        v[0]  = v[0] * vvvi[0].x + vvvi[0].y; 
+        v[1] = v[1] * vvvi[1].x + vvvi[1].y;
+        v[2] = v[2] * vvvi[2].x +  vvvi[2].y;
+    }
+}
+
+template<typename IdxT>
+__global__
+void updateCurrentsBoxKernel(FDTD_FLOAT * __restrict__ curr, const FDTD_FLOAT * __restrict__ volt, const IdxT * __restrict__ op_index, const FDTD_FLOAT * __restrict__ ii_iv_table, dim3 dim, uint3 lo, uint3 hi)
+{
+    int z = lo.z + blockIdx.x * TILE_Z + threadIdx.x;
+    int y = lo.y + blockIdx.y * TILE_Y + threadIdx.y;
+    int x = lo.x + blockIdx.z;
+    if (z >= (int)hi.z || y >= (int)hi.y) return;
+    if (x >= (int)dim.x - 1) return;   // currents of the last x-plane stay
+    int cell = (x * dim.y + y) * dim.z + z;
+    int offs = cell * 3;
+    if ((y < dim.y - 1) && (z < dim.z - 1)) {
+        // per-cell body identical to updateCurrentsKernel
+        volt += offs;
+        const FDTD_FLOAT* vx = volt + (dim.y * dim.z * 3);
+        const FDTD_FLOAT* vy = volt + (3 * dim.z);
+        const FDTD_FLOAT* vz = volt + 3;
+
+        float2 iiiv[3];
+        const FDTD_FLOAT* c = ii_iv_table + (size_t)op_index[cell] * 6;
+
+        iiiv[0] = *(float2 *)(&c[0]);
+        iiiv[1] = *(float2 *)(&c[2]);
+        iiiv[2] = *(float2 *)(&c[4]);
+
+        FDTD_FLOAT v[3];
+        v[0] = volt[0];
+        v[1] = volt[1];
+        v[2] = volt[2];
+
+        iiiv[0].y *= (v[2] - vy[2] - v[1] + vz[1]);
+        iiiv[1].y *= (v[0] - vz[0] - v[2] + vx[2]);
+        iiiv[2].y *= (v[1] - vx[1] - v[0] + vy[0]);
+
+        FDTD_FLOAT* i = curr + offs;
+        i[0] = i[0] * iiiv[0].x + iiiv[0].y;
+        i[1] = i[1] * iiiv[1].x + iiiv[1].y;
+        i[2] = i[2] * iiiv[2].x + iiiv[2].y;
+    }
+}
+
+// UPML folded into the core update for the cells of one PML block: the
+// extension's pre-update (flux swap), the core Yee update and its post-update
+// in one pass, in the extension's exact per-address operation order:
+//   pre:  f = vv*V - vvfo*F;  V1 = F;  F1 = f
+//   core: V2 = core(V1)
+//   post: F2 = V2;  V3 = F1 + vvfn*V2
+// Legal because the core update of volt only reads curr (and vice versa), and
+// Engine_cuda::DecideFusedPML only enables it when no other extension touches
+// a PML cell between those hooks.
+template<typename IdxT>
+__global__
+void pmlVoltFusedKernel(FDTD_FLOAT * __restrict__ volt, const FDTD_FLOAT * __restrict__ curr, const IdxT * __restrict__ op_index, const FDTD_FLOAT * __restrict__ vv_vi_table, dim3 dim, upml_block_t blk)
+{
+    int lz = blockIdx.x * TILE_Z + threadIdx.x;
+    int ly = blockIdx.y * TILE_Y + threadIdx.y;
+    int lx = blockIdx.z;
+    if (lz >= (int)blk.lines.z || ly >= (int)blk.lines.y) return;
+    int x = blk.start.x + lx, y = blk.start.y + ly, z = blk.start.z + lz;
+    int cell = (x * dim.y + y) * dim.z + z;
+    int offs = cell * 3;
+    int li = ((lx * blk.lines.y + ly) * blk.lines.z + lz) * 3;
+    FDTD_FLOAT* F = blk.volt_flux + li;
+
+    // UPML pre-update (PreVoltageUpdateKernel)
+    FDTD_FLOAT f[3], vin[3];
+    for (int n = 0; n < 3; ++n) {
+        const FDTD_FLOAT *cp = blk.coeff_table + (int)blk.coeff_index[li + n] * 6;
+        FDTD_FLOAT *vp = volt + offs + n;
+        FDTD_FLOAT *fp = F + n;
+        f[n] = cp[0] * vp[0] - cp[2] * fp[0];   // vv, vvfo
+        vin[n] = fp[0];
+    }
+
+    // core update (body of updateVoltagesKernel, volt operand = vin)
+    const FDTD_FLOAT* ix = curr + ((x != 0) ? offs - dim.y * dim.z * 3 : offs);
+    const FDTD_FLOAT* iy = curr + ((y != 0) ? offs - dim.z * 3 : offs);
+    const FDTD_FLOAT* iz = curr + ((z != 0) ? offs - 3 : offs);
+
+    float2 vvvi[3];
+    const FDTD_FLOAT* c = vv_vi_table + (size_t)op_index[cell] * 6;
+    vvvi[0] = *(float2*)(c);
+    vvvi[1] = *(float2*)(c + 2);
+    vvvi[2] = *(float2*)(c + 4);
+
+    FDTD_FLOAT i[3];
+    const FDTD_FLOAT *p = curr + offs;
+    i[0]= *p++;
+    i[1] = *p++;
+    i[2] = *p++;
+
+    vvvi[0].y *= (i[2] - iy[2] - i[1] + iz[1]);
+    vvvi[1].y *= (i[0] - iz[0] - i[2] + ix[2]);
+    vvvi[2].y *= (i[1] -ix[1] - i[0] + iy[0]);
+
+    FDTD_FLOAT vout[3];
+    vout[0] = vin[0] * vvvi[0].x + vvvi[0].y;
+    vout[1] = vin[1] * vvvi[1].x + vvvi[1].y;
+    vout[2] = vin[2] * vvvi[2].x + vvvi[2].y;
+
+    // UPML post-update (PostVoltageUpdateKernel)
+    for (int n = 0; n < 3; ++n) {
+        FDTD_FLOAT vvfn = blk.coeff_table[(int)blk.coeff_index[li + n] * 6 + 1];
+        F[n] = vout[n];
+        volt[offs + n] = f[n] + vvfn * vout[n];
+    }
+}
+
+template<typename IdxT>
+__global__
+void pmlCurrFusedKernel(FDTD_FLOAT * __restrict__ curr, const FDTD_FLOAT * __restrict__ volt, const IdxT * __restrict__ op_index, const FDTD_FLOAT * __restrict__ ii_iv_table, dim3 dim, upml_block_t blk)
+{
+    int lz = blockIdx.x * TILE_Z + threadIdx.x;
+    int ly = blockIdx.y * TILE_Y + threadIdx.y;
+    int lx = blockIdx.z;
+    if (lz >= (int)blk.lines.z || ly >= (int)blk.lines.y) return;
+    int x = blk.start.x + lx, y = blk.start.y + ly, z = blk.start.z + lz;
+    int cell = (x * dim.y + y) * dim.z + z;
+    int offs = cell * 3;
+    int li = ((lx * blk.lines.y + ly) * blk.lines.z + lz) * 3;
+    FDTD_FLOAT* F = blk.curr_flux + li;
+
+    // UPML pre-update (PreCurrentUpdateKernel)
+    FDTD_FLOAT g[3], iin[3], iout[3];
+    for (int n = 0; n < 3; ++n) {
+        const FDTD_FLOAT *cp = blk.coeff_table + (int)blk.coeff_index[li + n] * 6;
+        FDTD_FLOAT *ip = curr + offs + n;
+        FDTD_FLOAT *fp = F + n;
+        g[n] = cp[3] * ip[0] - cp[5] * fp[0];   // ii, iifo
+        iin[n] = fp[0];
+    }
+    iout[0] = iin[0]; iout[1] = iin[1]; iout[2] = iin[2];
+
+    // core update (body of updateCurrentsKernel, curr operand = iin); the
+    // core update leaves the last planes alone
+    if ((x < (int)dim.x - 1) && (y < dim.y - 1) && (z < dim.z - 1)) {
+        const FDTD_FLOAT* v0 = volt + offs;
+        const FDTD_FLOAT* vx = v0 + (dim.y * dim.z * 3);
+        const FDTD_FLOAT* vy = v0 + (3 * dim.z);
+        const FDTD_FLOAT* vz = v0 + 3;
+
+        float2 iiiv[3];
+        const FDTD_FLOAT* c = ii_iv_table + (size_t)op_index[cell] * 6;
+        iiiv[0] = *(float2 *)(&c[0]);
+        iiiv[1] = *(float2 *)(&c[2]);
+        iiiv[2] = *(float2 *)(&c[4]);
+
+        FDTD_FLOAT v[3];
+        v[0] = v0[0];
+        v[1] = v0[1];
+        v[2] = v0[2];
+
+        iiiv[0].y *= (v[2] - vy[2] - v[1] + vz[1]);
+        iiiv[1].y *= (v[0] - vz[0] - v[2] + vx[2]);
+        iiiv[2].y *= (v[1] - vx[1] - v[0] + vy[0]);
+
+        iout[0] = iin[0] * iiiv[0].x + iiiv[0].y;
+        iout[1] = iin[1] * iiiv[1].x + iiiv[1].y;
+        iout[2] = iin[2] * iiiv[2].x + iiiv[2].y;
+    }
+
+    // UPML post-update (PostCurrentUpdateKernel)
+    for (int n = 0; n < 3; ++n) {
+        FDTD_FLOAT iifn = blk.coeff_table[(int)blk.coeff_index[li + n] * 6 + 4];
+        F[n] = iout[n];
+        curr[offs + n] = g[n] + iifn * iout[n];
     }
 }
 
@@ -386,8 +613,145 @@ void Engine_cuda::Reset() {
 }
 
 
+// Decide, once and before the per-timestep graph is captured, how the core
+// update is launched: 2-D box tiles over the whole grid by default; with
+// UPML folded in (fused pre + core + post per PML cell, PML-free interior as a
+// separate box) whenever that is exact -- see pmlVoltFusedKernel. Falls back
+// to the separate UPML kernels if any condition is not met.
+void Engine_cuda::DecideFusedPML()
+{
+    m_launch_checked = true;
+    const char* lg = getenv("OPENEMS_CUDA_LEGACY_KERNELS");
+    m_legacy_kernels = (lg && lg[0]=='1');
+    m_int_lo = make_uint3(0, 0, 0);
+    m_int_hi = make_uint3(numLines[0], numLines[1], numLines[2]);
+    m_fused_upml = NULL;
+    if (m_legacy_kernels) return;
+    const char* fe = getenv("OPENEMS_CUDA_FUSE_PML");
+    if (fe && fe[0]=='0') return;
+
+    Engine_Ext_United_UPML* up = NULL;
+    for (size_t n = 0; n < m_Eng_exts.size(); ++n)
+        if (Engine_Ext_United_UPML* u = dynamic_cast<Engine_Ext_United_UPML*>(m_Eng_exts[n])) up = u;
+    if (!up || up->IsMultiGPU() || up->HostBlocks().empty()) return;
+    const std::vector<upml_block_t>& B = up->HostBlocks();
+
+    // No extension can act between the UPML pre-update, the core update and
+    // the UPML post-update: Engine runs the pre-hooks in reverse priority
+    // order and the post-hooks in priority order, and UPML has the highest
+    // priority, so its pre-hook is always the last thing before the core
+    // update and its post-hook the first thing after it. Folding the three
+    // into one kernel therefore keeps every other extension's view of the
+    // fields exactly as it was, whatever the extension set. That rests on
+    // UPML outranking every extension with a pre/post hook; steady state
+    // (higher priority) only has Apply2* hooks.
+    const char* why = NULL;
+    for (size_t n = 0; n < m_Eng_exts.size() && !why; ++n)
+    {
+        Engine_Extension* e = m_Eng_exts[n];
+        if (e != up && e->GetPriority() >= up->GetPriority() && !dynamic_cast<Engine_Ext_SteadyState*>(e))
+            why = "an extension outranks the UPML";
+    }
+
+    // The PML-free interior must be one box, the blocks disjoint and, with it,
+    // exactly covering the grid.
+    unsigned int N[3] = {numLines[0], numLines[1], numLines[2]};
+    unsigned int lo[3] = {0, 0, 0}, hi[3] = {N[0], N[1], N[2]};
+    if (!why)
+    {
+        for (size_t b = 0; b < B.size(); ++b)
+        {
+            unsigned int st[3] = {B[b].start.x, B[b].start.y, B[b].start.z};
+            unsigned int ln[3] = {B[b].lines.x, B[b].lines.y, B[b].lines.z};
+            for (int a = 0; a < 3; ++a)
+            {
+                if (ln[a] >= N[a]) continue;
+                if (st[a] == 0) lo[a] = std::max(lo[a], ln[a]);
+                else if (st[a] + ln[a] == N[a]) hi[a] = std::min(hi[a], st[a]);
+            }
+        }
+        unsigned long long total = (unsigned long long)N[0]*N[1]*N[2], sum = 0;
+        for (int a = 0; a < 3; ++a) if (hi[a] <= lo[a]) why = "no PML-free interior";
+        if (!why) sum = (unsigned long long)(hi[0]-lo[0])*(hi[1]-lo[1])*(hi[2]-lo[2]);
+        for (size_t b = 0; b < B.size() && !why; ++b)
+        {
+            unsigned int st[3] = {B[b].start.x, B[b].start.y, B[b].start.z};
+            unsigned int ln[3] = {B[b].lines.x, B[b].lines.y, B[b].lines.z};
+            sum += (unsigned long long)ln[0]*ln[1]*ln[2];
+            bool overlapsInt = true;
+            for (int a = 0; a < 3; ++a)
+                overlapsInt = overlapsInt && (st[a] < hi[a]) && (st[a] + ln[a] > lo[a]);
+            if (overlapsInt) why = "PML block overlaps the interior";
+            for (size_t c = b + 1; c < B.size() && !why; ++c)
+            {
+                bool ov = true;
+                unsigned int s2[3] = {B[c].start.x, B[c].start.y, B[c].start.z};
+                unsigned int l2[3] = {B[c].lines.x, B[c].lines.y, B[c].lines.z};
+                for (int a = 0; a < 3; ++a)
+                    ov = ov && (st[a] < s2[a] + l2[a]) && (s2[a] < st[a] + ln[a]);
+                if (ov) why = "overlapping PML blocks";
+            }
+        }
+        if (!why && sum != total) why = "PML blocks and interior do not tile the grid";
+    }
+    if (why)
+    {
+        if (getenv("OPENEMS_PROF"))
+            fprintf(stderr, "[PROF] PML not folded into the update kernels: %s\n", why);
+        return;
+    }
+    m_int_lo = make_uint3(lo[0], lo[1], lo[2]);
+    m_int_hi = make_uint3(hi[0], hi[1], hi[2]);
+    m_fused_upml = up;
+    up->SetFusedMain(true);
+    if (getenv("OPENEMS_PROF"))
+        fprintf(stderr, "[PROF] PML folded into the update kernels: interior [%u,%u)x[%u,%u)x[%u,%u), %zu PML blocks\n",
+                lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], B.size());
+}
+
+static inline dim3 tileGrid(unsigned int nx, unsigned int ny, unsigned int nz)
+{
+    return dim3((nz + TILE_Z - 1) / TILE_Z, (ny + TILE_Y - 1) / TILE_Y, nx);
+}
+
+template<typename IdxT>
+void Engine_cuda::LaunchVoltageUpdate()
+{
+    const IdxT* idx = (const IdxT*)d_op_index;
+    dim3 blk(TILE_Z, TILE_Y, 1);
+    uint3 lo = m_int_lo, hi = m_int_hi;
+    updateVoltagesBoxKernel<IdxT><<<tileGrid(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z), blk>>>(
+        volt_array->device_data(), (const FDTD_FLOAT*)curr_array->device_data(), idx, d_vv_vi_table, m_dim, lo, hi);
+    if (m_fused_upml) {
+        const std::vector<upml_block_t>& B = m_fused_upml->HostBlocks();
+        for (size_t b = 0; b < B.size(); ++b)
+            pmlVoltFusedKernel<IdxT><<<tileGrid(B[b].lines.x, B[b].lines.y, B[b].lines.z), blk>>>(
+                volt_array->device_data(), (const FDTD_FLOAT*)curr_array->device_data(), idx, d_vv_vi_table, m_dim, B[b]);
+    }
+}
+
+template<typename IdxT>
+void Engine_cuda::LaunchCurrentUpdate()
+{
+    const IdxT* idx = (const IdxT*)d_op_index;
+    dim3 blk(TILE_Z, TILE_Y, 1);
+    uint3 lo = m_int_lo, hi = m_int_hi;
+    updateCurrentsBoxKernel<IdxT><<<tileGrid(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z), blk>>>(
+        curr_array->device_data(), (const FDTD_FLOAT*)volt_array->device_data(), idx, d_ii_iv_table, m_dim, lo, hi);
+    if (m_fused_upml) {
+        const std::vector<upml_block_t>& B = m_fused_upml->HostBlocks();
+        for (size_t b = 0; b < B.size(); ++b)
+            pmlCurrFusedKernel<IdxT><<<tileGrid(B[b].lines.x, B[b].lines.y, B[b].lines.z), blk>>>(
+                curr_array->device_data(), (const FDTD_FLOAT*)volt_array->device_data(), idx, d_ii_iv_table, m_dim, B[b]);
+    }
+}
+
 void Engine_cuda::UpdateVoltages(unsigned int startX, unsigned int numX) {
-    // Copy current data to GPU
+    if (!m_legacy_kernels) {
+        if (m_index_u16) LaunchVoltageUpdate<unsigned short>();
+        else             LaunchVoltageUpdate<unsigned int>();
+        return;
+    }
     int N = numX * numLines[1] * numLines[2];
 
     // Launch kernel
@@ -399,13 +763,14 @@ void Engine_cuda::UpdateVoltages(unsigned int startX, unsigned int numX) {
     else
         updateVoltagesKernel<<< blocks, UPDATE_THREADS >>>(volt_array->device_data(), (const FDTD_FLOAT*)curr_array->device_data(),
                 (const unsigned int*)d_op_index, d_vv_vi_table, N, dim);
-
-    //checkCudaErrors();
 }
 
 void Engine_cuda::UpdateCurrents(unsigned int startX, unsigned int numX) {
-    // Copy voltage data to GPU
-
+    if (!m_legacy_kernels) {
+        if (m_index_u16) LaunchCurrentUpdate<unsigned short>();
+        else             LaunchCurrentUpdate<unsigned int>();
+        return;
+    }
     int N = numX * numLines[1] * numLines[2];
 
     // Launch kernel
@@ -418,7 +783,6 @@ void Engine_cuda::UpdateCurrents(unsigned int startX, unsigned int numX) {
     else
         updateCurrentsKernel<<< blocks, UPDATE_THREADS >>>(curr_array->device_data(), (const FDTD_FLOAT*)volt_array->device_data(),
                 (const unsigned int*)d_op_index, d_ii_iv_table, N, dim);
-    //checkCudaErrors();
 }
 
 void Engine_cuda::AddVolt(unsigned int n, const unsigned int pos[3], FDTD_FLOAT value)
@@ -566,6 +930,7 @@ void Engine_cuda::SelectiveReadbackFinish()
 // launches + C++ extension dispatch into a single graph launch).
 void Engine_cuda::RunOneTimestep()
 {
+    if (!m_launch_checked) DecideFusedPML();
     DoPreVoltageUpdates();
     UpdateVoltages(0, numLines[0]);
     DoPostVoltageUpdates();
@@ -750,6 +1115,36 @@ __global__ void fieldGatherKernel(const FDTD_FLOAT* __restrict__ src,
     out[o] = v;
 }
 
+// Gather + running DFT in one pass: the interpolated sample is formed exactly
+// as fieldGatherKernel forms it, then added to each frequency's sum as
+// sum += v * w, with the product and the sum rounded separately -- the same
+// two roundings as the host's  field_fd += field_td * exp_jwt_2_dt  on
+// std::complex<float>, so the sums are bit-identical to the host DFT.
+#define DFT_FREQ_PER_LAUNCH 64
+struct DFTWeights { float2 w[DFT_FREQ_PER_LAUNCH]; };
+
+__global__ void fieldGatherDFTKernel(const FDTD_FLOAT* __restrict__ src,
+                                     const unsigned int* __restrict__ offsets,
+                                     const unsigned int* __restrict__ idx,
+                                     const float* __restrict__ coeff,
+                                     float2* __restrict__ dft, int nOut,
+                                     int nf, DFTWeights W)
+{
+    int o = blockIdx.x * blockDim.x + threadIdx.x;
+    if (o >= nOut) return;
+    unsigned int a = offsets[o], b = offsets[o + 1];
+    float v = 0.0f;
+    for (unsigned int e = a; e < b; ++e)
+        v += coeff[e] * (float)src[idx[e]];
+    for (int k = 0; k < nf; ++k) {
+        float2 *p = dft + (size_t)k * nOut + o;
+        float2 acc = *p;
+        acc.x = __fadd_rn(acc.x, __fmul_rn(v, W.w[k].x));
+        acc.y = __fadd_rn(acc.y, __fmul_rn(v, W.w[k].y));
+        *p = acc;
+    }
+}
+
 void Engine_cuda::RunFieldGathers()
 {
     for (size_t g = 0; g < m_gathers.size(); ++g) {
@@ -757,6 +1152,23 @@ void Engine_cuda::RunFieldGathers()
         const FDTD_FLOAT *src = G.useCurr ? GetDeviceCurrData() : GetDeviceVoltData();
         int nOut = (int)G.nOut;
         int block = 128, grid = (nOut + block - 1) / block;
+        if (G.d_dft) {
+            // Sample only where the dump's Process() will; the weights come
+            // from the dump itself, so they are the host DFT's exact factors.
+            G.ts = (long)numTS;
+            if (!G.dft_client->DeviceDFTFactors((unsigned int)numTS, G.dft_factors))
+                continue;
+            for (size_t f0 = 0; f0 < G.nFreq; f0 += DFT_FREQ_PER_LAUNCH) {
+                int nf = (int)std::min((size_t)DFT_FREQ_PER_LAUNCH, G.nFreq - f0);
+                DFTWeights W;
+                for (int k = 0; k < nf; ++k)
+                    W.w[k] = make_float2(G.dft_factors[f0 + k].real(), G.dft_factors[f0 + k].imag());
+                fieldGatherDFTKernel<<<grid, block, 0, cudaStreamPerThread>>>(
+                    src, G.d_offsets, G.d_src, G.d_coeff, G.d_dft + f0 * G.nOut, nOut, nf, W);
+            }
+            ++G.dft_samples;
+            continue;
+        }
         fieldGatherKernel<<<grid, block, 0, cudaStreamPerThread>>>(
             src, G.d_offsets, G.d_src, G.d_coeff, G.d_out, nOut);
         checkCuda(cudaMemcpyAsync(G.h_out, G.d_out, G.nOut * sizeof(float),
@@ -790,6 +1202,10 @@ int Engine_cuda::RegisterFieldGather(const std::vector<unsigned int>& offsets,
     G.nOut = nOut;
     G.useCurr = useCurr;
     G.ts = -1;
+    G.dft_client = NULL;
+    G.nFreq = 0;
+    G.d_dft = NULL;
+    G.dft_samples = 0;
     if (cudaMalloc(&G.d_offsets, offsets.size() * sizeof(unsigned int)) != cudaSuccess) { cudaGetLastError(); return -1; }
     if (cudaMalloc(&G.d_src, src.size() * sizeof(unsigned int)) != cudaSuccess ||
         cudaMalloc(&G.d_coeff, coeff.size() * sizeof(float)) != cudaSuccess ||
@@ -810,6 +1226,38 @@ int Engine_cuda::RegisterFieldGather(const std::vector<unsigned int>& offsets,
     return (int)m_gathers.size() - 1;
 }
 
+bool Engine_cuda::EnableFieldDFT(int id, size_t nFreq, const FieldDFTClient* client)
+{
+    if (id < 0 || id >= (int)m_gathers.size() || !client || nFreq == 0) return false;
+    GpuGather &G = m_gathers[id];
+    if (G.d_dft) return false;
+    if (G.nOut > (size_t)INT_MAX) return false;
+    size_t need = G.nOut * nFreq * sizeof(float2);
+    size_t freeB = 0, totB = 0;
+    if (cudaMemGetInfo(&freeB, &totB) != cudaSuccess) { cudaGetLastError(); return false; }
+    if (need > freeB / 2) {
+        fprintf(stderr, "Engine_cuda: device DFT needs %.0f MB > half of %.0f MB free -- using host DFT\n",
+                need / 1048576.0, freeB / 1048576.0);
+        return false;
+    }
+    if (cudaMalloc(&G.d_dft, need) != cudaSuccess) { cudaGetLastError(); G.d_dft = NULL; return false; }
+    checkCuda(cudaMemset(G.d_dft, 0, need));
+    G.nFreq = nFreq;
+    G.dft_client = client;
+    G.dft_samples = 0;
+    return true;
+}
+
+long Engine_cuda::ReadFieldDFT(int id, size_t freq, std::complex<float>* host)
+{
+    if (id < 0 || id >= (int)m_gathers.size()) return -1;
+    GpuGather &G = m_gathers[id];
+    if (!G.d_dft || freq >= G.nFreq) return -1;
+    checkCuda(cudaDeviceSynchronize());
+    checkCuda(cudaMemcpy(host, G.d_dft + freq * G.nOut, G.nOut * sizeof(float2), cudaMemcpyDeviceToHost));
+    return G.dft_samples;
+}
+
 long Engine_cuda::GetGatherTS(int id) const
 {
     if (id < 0 || id >= (int)m_gathers.size()) return -1;
@@ -824,6 +1272,7 @@ void Engine_cuda::FreeFieldGathers()
         cudaFree(m_gathers[g].d_coeff);
         cudaFree(m_gathers[g].d_out);
         cudaFreeHost(m_gathers[g].h_out);
+        if (m_gathers[g].d_dft) cudaFree(m_gathers[g].d_dft);
     }
     m_gathers.clear();
 }

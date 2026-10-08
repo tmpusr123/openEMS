@@ -171,6 +171,15 @@ public:
 	//! Get the disc line delta in \a n direction (in drawing units)
 	virtual double GetDiscDelta(int n, unsigned int pos, bool dualMesh=false) const;
 
+	//! Rennings_2 (CalcTimestep_Var3) stability criterion of a single node in
+	//! direction n -- the same arithmetic the global scan takes the minimum of.
+	double CalcNodeTimestep_Var3(int n, const unsigned int pos[3]) const;
+	//! Smallest node criterion over all directions in the 3x3x3 neighbourhood of
+	//! pos: every node whose criterion reads an EC_C/EC_L edge at pos. Lets an
+	//! extension that changes a cell's EC_C after the timestep was fixed check
+	//! that the cell is still stable at that timestep.
+	double MinNodeTimestepAround(const unsigned int pos[3]) const;
+
 	//! Get the coordinates for a given node index and component, according to the yee-algorithm. Returns true if inside the FDTD domain.
 	virtual bool GetYeeCoords(int ny, unsigned int pos[3], double* coords, bool dualMesh) const;
 

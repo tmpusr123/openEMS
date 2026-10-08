@@ -40,3 +40,4 @@ CLAUDE.md
 .cursor*
 .windsurf*
 .copilot*
+python/openEMS/*.cpp

@@ -17,6 +17,7 @@
 
 #include "openems.h"
 #include <iomanip>
+#include <climits>
 #include <iostream>
 #include <fstream>
 #include "tools/array_ops.h"
@@ -36,6 +37,7 @@
 #include "FDTD/extensions/operator_ext_lumpedRLC.h"
 #ifdef WITH_CUDA
 #include "FDTD/engine_cuda.h"
+#include "FDTD/extensions/engine_extension.h"
 #endif
 #include "FDTD/extensions/operator_ext_conductingsheet.h"
 #include "FDTD/extensions/operator_ext_lossymetal.h"
@@ -301,6 +303,13 @@ openEMS::optionDesc()
 			),
 			"Force use n threads for multithreaded engine "
 			"(needs: --engine=multithreaded)"
+		)
+		(
+			"no-ext-opt",
+			po::bool_switch(),
+			"do not use the optimized update paths of the CPU engine "
+			"extensions (the results are identical, only slower); "
+			"for debugging and benchmarking"
 		)
 		(
 			"no-simulation",
@@ -1312,8 +1321,55 @@ int openEMS::SetupFDTD()
 		return 1;
 	}
 
+#if WITH_CUDA
+	// The CUDA engines index fields with 32-bit ints (3 components per cell);
+	// past INT_MAX they would wrap and silently corrupt memory. Refuse cleanly.
+	if (dynamic_cast<Operator_CUDA*>(FDTD_Op))
+	{
+		unsigned long long cells = (unsigned long long)FDTD_Op->GetNumberOfLines(0,true)
+		                         * FDTD_Op->GetNumberOfLines(1,true) * FDTD_Op->GetNumberOfLines(2,true);
+		if (cells*3ULL >= (unsigned long long)INT_MAX)
+		{
+			cerr << "openEMS::SetupFDTD: Error, " << cells << " cells exceed the CUDA engine's 32-bit field index ("
+			     << (unsigned long long)INT_MAX/3 << " cells max). Use the CPU engine (setup error code 5)." << endl;
+			Signal::SetupHandlerForSIGINT(SIGNAL_ORIGINAL);
+			return 5;
+		}
+	}
+#endif
+
 	//create FDTD engine
 	FDTD_Eng = FDTD_Op->CreateEngine();
+
+#if WITH_CUDA
+	// An engine extension without a CUDA implementation would run its host
+	// hooks against device-resident fields the GPU engine never syncs: its
+	// physics is silently dropped and the run still "succeeds". Refuse instead,
+	// with a distinct code (4) a caller can catch and rerun on the CPU engine.
+	// OPENEMS_CUDA_ALLOW_UNPORTED=1 restores the old warn-and-continue.
+	if (FDTD_Eng->GetType()==Engine::CUDA)
+	{
+		std::string unported;
+		for (size_t n=0; n<FDTD_Eng->GetExtensionCount(); ++n)
+			if (!FDTD_Eng->GetExtension(n)->IsCUDACapable())
+				unported += (unported.empty() ? "" : ", ") + FDTD_Eng->GetExtension(n)->GetExtensionName();
+		const char* allow = getenv("OPENEMS_CUDA_ALLOW_UNPORTED");
+		if (!unported.empty() && !(allow && allow[0]=='1'))
+		{
+			cerr << "openEMS::SetupFDTD: Error, the CUDA engine cannot run this model: no CUDA implementation for: "
+			     << unported << ". Use the CPU engine (setup error code 4)." << endl;
+			// release the GPU engine and the operator now, so a caller can rerun
+			// this object on the CPU engine without holding both
+			delete FDTD_Eng;
+			FDTD_Eng = NULL;
+			Op_Ext_SSD = NULL;
+			delete FDTD_Op;
+			FDTD_Op = NULL;
+			Signal::SetupHandlerForSIGINT(SIGNAL_ORIGINAL);
+			return 4;
+		}
+	}
+#endif
 
 	if (Op_Ext_SSD)
 	{

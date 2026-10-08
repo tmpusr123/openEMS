@@ -45,6 +45,8 @@ public:
 	                                const std::vector<float>& coeff,
 	                                bool useCurr, size_t nOut, float** hostOut);
 	virtual long GetGatherTS(int id) const;
+	virtual bool EnableFieldDFT(int id, size_t nFreq, const FieldDFTClient* client);
+	virtual long ReadFieldDFT(int id, size_t freq, std::complex<float>* host);
 
 	int inline FlatIndex(int x, int y, int z) const {
 		return x * numLines[1] * numLines[2] + y * numLines[2] + z; 
@@ -159,6 +161,13 @@ protected:
 		size_t        nOut;
 		bool          useCurr;
 		long          ts;         // numTS the h_out buffer currently holds
+		// device-resident running DFT (EnableFieldDFT): nFreq sums of nOut
+		// complex values, frequency-major. No per-sample host copy at all.
+		const FieldDFTClient *dft_client;
+		size_t        nFreq;
+		float2       *d_dft;
+		long          dft_samples;
+		std::vector<std::complex<float> > dft_factors;  // scratch
 	};
 	std::vector<GpuGather> m_gathers;
 	void RunFieldGathers();      // enqueue all gathers on the work stream
@@ -203,6 +212,15 @@ private:
 	bool          m_graph_ready;
 
 	void RunOneTimestep();        // one timestep's kernel launches (no readback)
+
+	// --- launch shape / PML folding (decided once, before graph capture) ---
+	void DecideFusedPML();
+	bool m_launch_checked = false;
+	bool m_legacy_kernels = false;                // OPENEMS_CUDA_LEGACY_KERNELS=1: flat grid-stride kernels
+	class Engine_Ext_United_UPML* m_fused_upml = NULL; // non-NULL: UPML runs inside the update kernels
+	uint3 m_int_lo, m_int_hi;                     // core-update box (whole grid, or the PML-free interior)
+	template<typename IdxT> void LaunchVoltageUpdate();
+	template<typename IdxT> void LaunchCurrentUpdate();
 
 	// --- Selective field readback ---
 	// The host field mirror is only needed at the handful of cells that probes

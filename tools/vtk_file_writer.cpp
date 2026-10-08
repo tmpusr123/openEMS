@@ -56,6 +56,27 @@ VTK_File_Writer::VTK_File_Writer(string filename, int meshType)
 	}
 }
 
+VTK_File_Writer* VTK_File_Writer::CloneEmpty() const
+{
+	VTK_File_Writer* w = new VTK_File_Writer(m_filename, m_MeshType);
+	w->m_header = m_header;
+	w->m_ActiveTS = m_ActiveTS;
+	w->m_timestep = m_timestep;
+	w->m_NativeDump = m_NativeDump;
+	w->m_AppendMode = m_AppendMode;
+	w->m_Binary = m_Binary;
+	w->m_Compress = m_Compress;
+	for (int n=0;n<3;++n)
+		w->m_MeshLines[n] = m_MeshLines[n];
+	if (m_GridData && w->m_GridData)
+	{
+		// deep copy so threads share no VTK objects; then drop any fields
+		w->m_GridData->DeepCopy(m_GridData);
+		w->m_GridData->GetPointData()->Initialize();
+	}
+	return w;
+}
+
 VTK_File_Writer::~VTK_File_Writer()
 {
 	if (m_GridData)

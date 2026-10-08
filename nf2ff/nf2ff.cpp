@@ -79,6 +79,7 @@ nf2ff::nf2ff(vector<float> freq, vector<float> theta, vector<float> phi, vector<
 	m_numThreads = numThreads;
 	for (int n=0;n<3;++n) { m_MirrorType[n]=0; m_MirrorPos[n]=0.0; }
 	m_cacheEnabled = false;
+	m_cacheOnly = false;
 }
 
 nf2ff::~nf2ff()
@@ -545,7 +546,23 @@ bool nf2ff::AnalyseFile(string E_Field_file, string H_Field_file)
 				cache_plane->E_fd.push_back(copy_N_3DArray(E_fd_data.at(fn), E_numLines));
 				cache_plane->H_fd.push_back(copy_N_3DArray(H_fd_data.at(fn), E_numLines));
 			}
-			m_nf2ff.at(fn)->AddPlane(E_lines, E_numLines, E_fd_data.at(fn), H_fd_data.at(fn),E_meshType);
+			if (cache_plane && m_cacheOnly)
+			{
+				Delete_N_3DArray<complex<float> >(E_fd_data.at(fn),E_numLines);
+				Delete_N_3DArray<complex<float> >(H_fd_data.at(fn),E_numLines);
+			}
+			else if (!m_nf2ff.at(fn)->AddPlane(E_lines, E_numLines, E_fd_data.at(fn), H_fd_data.at(fn),E_meshType))
+			{
+				// AddPlane freed this frequency's fields; free the rest
+				for (size_t fm=fn+1;fm<m_nf2ff.size();++fm)
+				{
+					Delete_N_3DArray<complex<float> >(E_fd_data.at(fm),E_numLines);
+					Delete_N_3DArray<complex<float> >(H_fd_data.at(fm),E_numLines);
+				}
+				for (int n=0;n<3;++n)
+					delete[] E_lines[n];
+				return false;
+			}
 			if (m_Verbose>1)
 				cerr << " done." << endl;
 		}
@@ -597,7 +614,17 @@ bool nf2ff::AnalyseFile(string E_Field_file, string H_Field_file)
 				cache_plane->E_fd.push_back(copy_N_3DArray(E_fd_data, E_numLines));
 				cache_plane->H_fd.push_back(copy_N_3DArray(H_fd_data, E_numLines));
 			}
-			m_nf2ff.at(n)->AddPlane(E_lines, E_numLines, E_fd_data, H_fd_data,E_meshType);
+			if (cache_plane && m_cacheOnly)
+			{
+				Delete_N_3DArray<complex<float> >(E_fd_data,E_numLines);
+				Delete_N_3DArray<complex<float> >(H_fd_data,E_numLines);
+			}
+			else if (!m_nf2ff.at(n)->AddPlane(E_lines, E_numLines, E_fd_data, H_fd_data,E_meshType))
+			{
+				for (int n=0;n<3;++n)
+					delete[] E_lines[n];
+				return false;
+			}
 			if (m_Verbose>1)
 				cerr << " done." << endl;
 		}
@@ -632,7 +659,44 @@ bool nf2ff::RecomputeForAngles(vector<float> theta, vector<float> phi)
 		        "(call SetCacheEnabled(true) before AnalyseFile)" << endl;
 		return false;
 	}
+	if (m_cacheFreq.empty())
+		m_cacheFreq = m_freq;
+	// all frequencies of the current list, which RecomputeSubset may have
+	// narrowed: map them back to their cached indices
+	vector<size_t> idx;
+	for (size_t fn=0;fn<m_freq.size();++fn)
+		for (size_t c=0;c<m_cacheFreq.size();++c)
+			if (m_cacheFreq[c]==m_freq[fn]) { idx.push_back(c); break; }
+	return Replay(theta, phi, idx);
+}
 
+bool nf2ff::RecomputeSubset(vector<float> theta, vector<float> phi, vector<float> center, vector<size_t> freq_idx)
+{
+	if (m_cachedPlanes.empty())
+	{
+		cerr << "nf2ff::RecomputeSubset: no cached planes "
+		        "(call SetCacheEnabled(true) before AnalyseFile)" << endl;
+		return false;
+	}
+	if (m_cacheFreq.empty())
+	{
+		m_cacheFreq = m_freq;
+		m_cachePermittivity = m_permittivity;
+		m_cachePermeability = m_permeability;
+	}
+	for (size_t k=0;k<freq_idx.size();++k)
+		if (freq_idx[k]>=m_cacheFreq.size())
+		{
+			cerr << "nf2ff::RecomputeSubset: frequency index " << freq_idx[k] << " out of range" << endl;
+			return false;
+		}
+	if (center.size()==3)
+		m_center = center;
+	return Replay(theta, phi, freq_idx);
+}
+
+bool nf2ff::Replay(vector<float> theta, vector<float> phi, const vector<size_t>& idx)
+{
 	// swap in the new angle grid
 	delete[] m_theta;
 	delete[] m_phi;
@@ -643,14 +707,16 @@ bool nf2ff::RecomputeForAngles(vector<float> theta, vector<float> phi)
 	m_phi = new float[m_numPhi];
 	for (size_t n=0;n<m_numPhi;++n) m_phi[n]=phi.at(n);
 
-	// recreate the per-frequency calc objects with the new angle grid (this
-	// re-allocates and zeroes the Nt/Np/Lt/Lp accumulators); restore the
-	// radius / mirror / material state that was applied before AnalyseFile
+	// recreate the per-frequency calc objects (this re-allocates and zeroes the
+	// Nt/Np/Lt/Lp accumulators); restore radius / mirror / material state
 	for (size_t fn=0;fn<m_nf2ff.size();++fn)
 		delete m_nf2ff.at(fn);
-	for (size_t fn=0;fn<m_freq.size();++fn)
+	m_nf2ff.assign(idx.size(), NULL);
+	m_freq.resize(idx.size());
+	for (size_t fn=0;fn<idx.size();++fn)
 	{
-		m_nf2ff.at(fn) = new nf2ff_calc(m_freq.at(fn), theta, phi, m_center);
+		m_freq[fn] = m_cacheFreq.at(idx[fn]);
+		m_nf2ff.at(fn) = new nf2ff_calc(m_freq[fn], theta, phi, m_center);
 		if (m_numThreads)
 			m_nf2ff.at(fn)->SetNumThreads(m_numThreads);
 		m_nf2ff.at(fn)->SetRadius(m_radius);
@@ -658,16 +724,29 @@ bool nf2ff::RecomputeForAngles(vector<float> theta, vector<float> phi)
 			if (m_MirrorType[d]!=0)
 				m_nf2ff.at(fn)->SetMirror(m_MirrorType[d], d, m_MirrorPos[d]);
 	}
-	if (m_permittivity.size()) SetPermittivity(m_permittivity);
-	if (m_permeability.size()) SetPermeability(m_permeability);
+	// per-frequency material vectors follow the cached frequency list
+	const vector<float>& eps = m_cachePermittivity.size() ? m_cachePermittivity : m_permittivity;
+	const vector<float>& mue = m_cachePermeability.size() ? m_cachePermeability : m_permeability;
+	for (int which=0; which<2; ++which)
+	{
+		const vector<float>& v = which ? mue : eps;
+		if (v.size()==0) continue;
+		vector<float> sub;
+		if (v.size()==1) sub = v;
+		else if (v.size()==m_cacheFreq.size()) for (size_t fn=0;fn<idx.size();++fn) sub.push_back(v.at(idx[fn]));
+		else sub = v;
+		if (which) SetPermeability(sub); else SetPermittivity(sub);
+	}
 
-	// replay the integration on the cached near-field — no file re-read.
+	// replay the integration on the cached near-field -- no file re-read.
 	// AddPlane frees the fields and mutates lines, so hand it fresh copies.
 	for (size_t p=0;p<m_cachedPlanes.size();++p)
 	{
 		nf2ff_cached_plane& cp = m_cachedPlanes[p];
-		for (size_t fn=0;fn<m_freq.size() && fn<cp.E_fd.size();++fn)
+		for (size_t fn=0;fn<idx.size();++fn)
 		{
+			if (idx[fn]>=cp.E_fd.size())
+				continue;
 			float* lines[3];
 			for (int n=0;n<3;++n)
 			{
@@ -675,11 +754,13 @@ bool nf2ff::RecomputeForAngles(vector<float> theta, vector<float> phi)
 				for (unsigned int m=0;m<cp.numLines[n];++m)
 					lines[n][m] = cp.lines[n][m];
 			}
-			complex<float>**** E = copy_N_3DArray(cp.E_fd[fn], cp.numLines);
-			complex<float>**** H = copy_N_3DArray(cp.H_fd[fn], cp.numLines);
-			m_nf2ff.at(fn)->AddPlane(lines, cp.numLines, E, H, cp.meshType);
+			complex<float>**** E = copy_N_3DArray(cp.E_fd[idx[fn]], cp.numLines);
+			complex<float>**** H = copy_N_3DArray(cp.H_fd[idx[fn]], cp.numLines);
+			bool ok = m_nf2ff.at(fn)->AddPlane(lines, cp.numLines, E, H, cp.meshType);
 			for (int n=0;n<3;++n)
 				delete[] lines[n];
+			if (!ok)
+				return false;
 		}
 	}
 	return true;

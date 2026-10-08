@@ -145,6 +145,8 @@ protected:
 	unsigned int m_FD_SampleCount;
 	//! Sampling interval needed for the FD_Samples
 	unsigned int m_FD_Interval;
+	//! Nyquist interval of the highest recorded/excited frequency (before oversampling)
+	unsigned int m_FD_Nyquist;
 
 	//! define if given coords are on main or dualMesh (default is false)
 	bool m_dualMesh;

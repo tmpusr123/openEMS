@@ -14,7 +14,21 @@
 #define FIELD_GATHER_BACKEND_H
 
 #include <vector>
+#include <complex>
 #include <cstddef>
+
+//! Supplies the running-DFT weights of a frequency-domain dump to the engine.
+//  The engine calls DeviceDFTFactors() whenever the device holds the fields of
+//  timestep ts (every chunk finish). It returns true -- and fills one weight
+//  per frequency -- exactly when the dump's Process() will take a sample at
+//  ts. It must not have side effects: it is asked once per chunk, the dump's
+//  Process() runs later (possibly while the next chunk already computes).
+class FieldDFTClient
+{
+public:
+	virtual ~FieldDFTClient() {}
+	virtual bool DeviceDFTFactors(unsigned int ts, std::vector<std::complex<float> >& factors) const = 0;
+};
 
 class FieldGatherBackend
 {
@@ -38,6 +52,18 @@ public:
 	//! Timestep count whose fields the dump id's host buffer currently holds
 	//! (-1 if not yet filled). Compare to GetNumberOfTimesteps() for freshness.
 	virtual long GetGatherTS(int id) const = 0;
+
+	//! Keep a running DFT of gather id on the device instead of handing the
+	//! raw samples to the host. nFreq complex sums of nOut values are kept in
+	//! device memory and advanced at every chunk finish for which the client
+	//! reports a sample. Returns false if unsupported or out of memory; the
+	//! caller then keeps the host DFT. Must be called before the first chunk.
+	virtual bool EnableFieldDFT(int id, size_t nFreq, const FieldDFTClient* client) {(void)id;(void)nFreq;(void)client;return false;}
+
+	//! Copy the device sums of frequency freq of gather id into host (nOut
+	//! values, gather output order). Returns the number of samples the device
+	//! accumulated, or -1 on error.
+	virtual long ReadFieldDFT(int id, size_t freq, std::complex<float>* host) {(void)id;(void)freq;(void)host;return -1;}
 };
 
 #endif // FIELD_GATHER_BACKEND_H

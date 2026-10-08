@@ -56,6 +56,14 @@ public:
 	virtual bool IsCUDACapable() const {return true;}
 #endif
 
+	// Fused mode (single GPU, set by Engine_cuda before graph capture): the
+	// engine runs pre + core + post of every PML cell in one kernel pass, so
+	// this extension's four hooks become no-ops. See Engine_cuda::DecideFusedPML.
+	void SetFusedMain(bool f) {m_fused_main = f;}
+	bool IsFusedMain() const {return m_fused_main;}
+	bool IsMultiGPU() const {return m_mgpu;}
+	const std::vector<upml_block_t>& HostBlocks() const {return m_h_blks;}
+
 	virtual void DoPreVoltageUpdates() {Engine_Ext_United_UPML::DoPreVoltageUpdates(0);};
 	virtual void DoPreVoltageUpdates(int threadID);
 	virtual void DoPostVoltageUpdates() {Engine_Ext_United_UPML::DoPostVoltageUpdates(0);};
@@ -103,6 +111,9 @@ private:
     // operations on disjoint addresses (bit-identical results).
     bool m_fuse = false;
     bool m_fuse_checked = false;
+
+    bool m_fused_main = false;
+    std::vector<upml_block_t> m_h_blks;   // single-GPU block descriptors (device pointers)
 
     // multi-GPU: PML blocks clipped to each slab's x-range and uploaded per
     // device (block starts translated to slab-local coordinates, flux state

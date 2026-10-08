@@ -395,7 +395,9 @@ class WaveguidePort(Port):
             e_start = np.array(start)
             e_stop  = np.array(stop)
             e_stop[self.exc_ny] = e_start[self.exc_ny]
-            e_vec = np.ones(3)
+            # scale by the requested amplitude (upstream 1dedf1e): the port used
+            # to excite with 1 whatever amplitude it was given
+            e_vec = excite*np.ones(3)
             e_vec[self.exc_ny] = 0
             exc = CSX.AddExcitation(self.lbl_temp.format('excite'), exc_type=excite_type, exc_val=e_vec, delay=self.delay)
             

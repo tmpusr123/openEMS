@@ -137,11 +137,45 @@ class nf2ff:
         ro_sig = (sim_path, tuple(np.atleast_1d(self.freq).tolist()),
                   tuple(np.atleast_1d(center).tolist()), float(radius))
 
-        if  not read_cached or not os.path.exists(fn):
+        # Read-once across frequencies: when self._read_once_freqs lists every
+        # frequency the caller will ask for, the first call reads (and caches)
+        # the six surface dumps for ALL of them in one pass, without
+        # integrating; each call then integrates only its own frequency, with
+        # its own center and angle grid, from the cache. The cache key is
+        # center-independent (the near-field read does not depend on it).
+        ro_all = getattr(self, '_read_once_freqs', None)
+        if ro and ro_all is not None:
+            ro_all = [float(f) for f in np.atleast_1d(ro_all)]
+            if not all(float(f) in ro_all for f in self.freq):
+                ro_all = None
+        if (not read_cached or not os.path.exists(fn)) and ro and ro_all is not None:
+            all_sig = ('all', sim_path, tuple(ro_all), float(radius))
+            if getattr(self, '_ro_nfc', None) is None or getattr(self, '_ro_sig', None) != all_sig:
+                nfc = _nf2ff._nf2ff(ro_all, np.deg2rad(theta), np.deg2rad(phi), center, verbose=verbose)
+                for ny in range(3):
+                    nfc.SetMirror(self.mirror[2*ny]  , ny, self.start[ny])
+                    nfc.SetMirror(self.mirror[2*ny+1], ny, self.stop[ny])
+                nfc.SetRadius(radius)
+                nfc.SetCacheEnabled(True)
+                nfc.SetCacheOnly(True)
+                for n in range(6):
+                    fn_e = os.path.join(sim_path, self.e_file + '_{}.h5'.format(n))
+                    fn_h = os.path.join(sim_path, self.h_file + '_{}.h5'.format(n))
+                    if os.path.exists(fn_e) and os.path.exists(fn_h):
+                        if not nfc.AnalyseFile(fn_e, fn_h):
+                            raise Exception('CalcNF2FF:: Unable to analyse files!')
+                self._ro_nfc = nfc
+                self._ro_sig = all_sig
+            idx = [ro_all.index(float(f)) for f in self.freq]
+            if not self._ro_nfc.RecomputeSubset(np.deg2rad(theta), np.deg2rad(phi), list(center), idx):
+                raise Exception('CalcNF2FF:: Unable to recompute the cached near-field!')
+            self._ro_nfc.Write2HDF5(fn)
+        elif  not read_cached or not os.path.exists(fn):
             if ro and getattr(self, '_ro_nfc', None) is not None \
                     and getattr(self, '_ro_sig', None) == ro_sig:
                 # reuse the cached near-field read; recompute the new angle grid
-                self._ro_nfc.RecomputeForAngles(np.deg2rad(theta), np.deg2rad(phi))
+                if not self._ro_nfc.RecomputeForAngles(np.deg2rad(theta), np.deg2rad(phi)):
+                    raise Exception('CalcNF2FF:: Unable to recompute the cached near-field!')
                 self._ro_nfc.Write2HDF5(fn)
             else:
                 nfc = _nf2ff._nf2ff(self.freq, np.deg2rad(theta), np.deg2rad(phi), center, verbose=verbose)

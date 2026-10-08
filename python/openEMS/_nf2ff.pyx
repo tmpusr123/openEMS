@@ -64,6 +64,22 @@ cdef class _nf2ff:
             ok = self.thisptr.RecomputeForAngles(_theta, _phi)
         return ok
 
+    def SetCacheOnly(self, val):
+        # With caching enabled, AnalyseFile() only reads + caches the planes
+        # (no integration); results come from RecomputeSubset().
+        self.thisptr.SetCacheOnly(<bint>val)
+
+    def RecomputeSubset(self, theta, phi, center, freq_idx):
+        # Far-field for a subset of the cached frequencies, with its own phase
+        # center and angle grid, from the cached planes (no file re-read).
+        cdef vector[float] _theta = theta
+        cdef vector[float] _phi = phi
+        cdef vector[float] _center = center
+        cdef vector[size_t] _idx = freq_idx
+        with nogil:
+            ok = self.thisptr.RecomputeSubset(_theta, _phi, _center, _idx)
+        return ok
+
     def SetMirror(self, mirr_type, ny, pos):
         if mirr_type<=0:
             return

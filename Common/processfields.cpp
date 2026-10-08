@@ -310,36 +310,55 @@ void ProcessFields::SetupGpuGather()
 	// {3, NK, NJ, NI} with i fastest, so output o = ((n*NK + k)*NJ + j)*NI + i --
 	// so the gather buffer can be written straight to HDF5 with no repack.
 	// Iterate spatially in (k, j, i) to match; concatenate per-component at end.
-	size_t nSpatial = NI*NJ*NK;
-	std::vector<unsigned int> csrc[3];            // per-component source indices
-	std::vector<float>        ccoeff[3];          // per-component coefficients
-	std::vector<unsigned int> ccount[3];          // entries per output point
-	for (int n=0;n<3;++n) ccount[n].reserve(nSpatial);
-	std::vector<FieldStencilEntry> st[3];
+	// Built per z-plane in parallel (the stencil builders only read operator
+	// state) and concatenated in plane order, so the CSR is exactly what the
+	// serial (k, j, i) loop produced. Was a serial pass over every dump point
+	// (~1 s per million points), paid per dump at setup.
 	bool useCurr=false;
-	for (unsigned int k=0; k<NK; ++k)
-		for (unsigned int j=0; j<NJ; ++j)
-			for (unsigned int i=0; i<NI; ++i)
-			{
-				unsigned int pos[3] = {posLines[0][i], posLines[1][j], posLines[2][k]};
-				if (!ei->BuildFieldStencil(pos, m_DumpType, st, useCurr)) return;
-				for (int n=0;n<3;++n)
-				{
-					for (size_t e=0;e<st[n].size();++e) { csrc[n].push_back(st[n][e].src); ccoeff[n].push_back(st[n][e].coeff); }
-					ccount[n].push_back((unsigned int)st[n].size());
-				}
-			}
-
 	std::vector<unsigned int> offsets; offsets.reserve(nOut+1);
 	std::vector<unsigned int> src;
 	std::vector<float> coeff;
-	offsets.push_back(0);
-	size_t run = 0;
-	for (int n=0;n<3;++n)   // concatenate in component order to match CSR output layout
 	{
-		src.insert(src.end(), csrc[n].begin(), csrc[n].end());
-		coeff.insert(coeff.end(), ccoeff[n].begin(), ccoeff[n].end());
-		for (size_t p=0;p<ccount[n].size();++p) { run += ccount[n][p]; offsets.push_back((unsigned int)run); }
+		struct Plane { std::vector<unsigned int> src[3]; std::vector<float> coeff[3]; std::vector<unsigned int> count[3]; };
+		std::vector<Plane> planes(NK);
+		bool useCurrK = false;
+		int bad = 0;
+#ifdef _OPENMP
+		#pragma omp parallel for schedule(dynamic,1) reduction(+:bad)
+#endif
+		for (int k=0; k<(int)NK; ++k)
+		{
+			Plane& P = planes[k];
+			std::vector<FieldStencilEntry> st[3];
+			bool uc = false;
+			for (int n=0;n<3;++n) P.count[n].reserve(NI*NJ);
+			for (unsigned int j=0; j<NJ; ++j)
+				for (unsigned int i=0; i<NI; ++i)
+				{
+					unsigned int pos[3] = {posLines[0][i], posLines[1][j], posLines[2][k]};
+					if (!ei->BuildFieldStencil(pos, m_DumpType, st, uc)) { ++bad; continue; }
+					for (int n=0;n<3;++n)
+					{
+						for (size_t e=0;e<st[n].size();++e) { P.src[n].push_back(st[n][e].src); P.coeff[n].push_back(st[n][e].coeff); }
+						P.count[n].push_back((unsigned int)st[n].size());
+					}
+				}
+			if (k==0) useCurrK = uc;
+		}
+		if (bad) return;
+		useCurr = useCurrK;
+		offsets.push_back(0);
+		size_t run = 0;
+		for (int n=0;n<3;++n)   // component-major, then k, j, i -- the CSR output layout
+			for (size_t k=0;k<NK;++k)
+			{
+				Plane& P = planes[k];
+				src.insert(src.end(), P.src[n].begin(), P.src[n].end());
+				coeff.insert(coeff.end(), P.coeff[n].begin(), P.coeff[n].end());
+				for (size_t p=0;p<P.count[n].size();++p) { run += P.count[n][p]; offsets.push_back((unsigned int)run); }
+				std::vector<unsigned int>().swap(P.src[n]);
+				std::vector<float>().swap(P.coeff[n]);
+			}
 	}
 
 	int id = be->RegisterFieldGather(offsets, src, coeff, useCurr, nOut, &m_gpu_hostbuf);

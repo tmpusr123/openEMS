@@ -20,6 +20,8 @@
 #include "Common/operator_base.h"
 #include <algorithm>
 #include "processing.h"
+#include <cstdlib>
+#include <algorithm>
 #include <climits>
 
 using namespace std;
@@ -35,6 +37,7 @@ Processing::Processing(Engine_Interface_Base* eng_if)
 	ProcessInterval=0;
 	m_FD_SampleCount=0;
 	m_FD_Interval=0;
+	m_FD_Nyquist=0;
 	m_weight=1;
 	m_Flush = false;
 	m_dualMesh = false;
@@ -192,10 +195,19 @@ void Processing::AddFrequency(double freq)
 		cerr << "Processing::AddFrequency: Warning: Requested frequency " << freq << " is higher than maximum excited frequency..." << endl;
 	}
 
-	if (m_FD_Interval==0)
-		m_FD_Interval = Op->GetNumberOfNyquistTimesteps();
-	if (m_FD_Interval>nyquistTS)
-		m_FD_Interval = nyquistTS;
+	if (m_FD_Nyquist==0)
+		m_FD_Nyquist = Op->GetNumberOfNyquistTimesteps();
+	if (m_FD_Nyquist>nyquistTS)
+		m_FD_Nyquist = nyquistTS;
+	// Sampled at the excitation's Nyquist rate, the spectrum just above the
+	// highest excited frequency aliases onto the upper band edge (upstream
+	// 46a00cb measured up to 18 dB on an NF2FF pattern at the band edge).
+	// OPENEMS_FD_OVERSAMPLING=<n> samples the running DFT n times as often.
+	// Default 1 = unchanged.
+	unsigned int os = 1;
+	if (const char* e = getenv("OPENEMS_FD_OVERSAMPLING"))
+		os = (unsigned int)std::max(1, atoi(e));
+	m_FD_Interval = std::max(1u, m_FD_Nyquist/os);
 
 	m_FD_Samples.push_back(freq);
 }

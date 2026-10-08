@@ -20,6 +20,7 @@
 #include "tools/constants.h"
 //#include "cond_sheet_parameter.h"
 #include "tools/AdrOp.h"
+#include <cstdlib>
 
 #include "operator_ext_lumpedRLC.h"
 #include "engine_ext_lumpedRLC.h"
@@ -37,13 +38,13 @@ Operator_Ext_LumpedRLC::Operator_Ext_LumpedRLC(Operator* op) : Operator_Extensio
 	v_RLC_i2v = NULL;
 
 	// Series circuit coefficients
-	v_RLC_vv2	= NULL;	// Coefficient for [n-2] time of Vd update in Vd equation
-	v_RLC_vj1	= NULL;	// Coefficient for [n-1] time of J update in Vd equation
-	v_RLC_vj2	= NULL;	// Coefficient for [n-2] time of J update in Vd equation
-	v_RLC_vvd	= NULL;	// Coefficient to multiply all Vd in the Vd update equation
-	v_RLC_ib0	= NULL;	// Inverse of beta_0
-	v_RLC_b1	= NULL;	// beta_1
-	v_RLC_b2	= NULL;	// beta_2
+	v_RLC_dJdV	= NULL;
+	v_RLC_aV	= NULL;
+	v_RLC_aQ	= NULL;
+	v_RLC_aJ	= NULL;
+	v_RLC_vcd	= NULL;
+	v_RLC_vvd	= NULL;
+	m_dT_half	= 0.0;
 
 	// Additional containers
 	v_RLC_dir = NULL;
@@ -59,13 +60,13 @@ Operator_Ext_LumpedRLC::Operator_Ext_LumpedRLC(Operator* op, Operator_Ext_Lumped
 	v_RLC_i2v = NULL;
 
 	// Series circuit coefficients
-	v_RLC_vv2	= NULL;	// Coefficient for [n-2] time of Vd update in Vd equation
-	v_RLC_vj1	= NULL;	// Coefficient for [n-1] time of J update in Vd equation
-	v_RLC_vj2	= NULL;	// Coefficient for [n-2] time of J update in Vd equation
-	v_RLC_vvd	= NULL;	// Coefficient to multiply all Vd in the Vd update equation
-	v_RLC_ib0	= NULL;	// Inverse of beta_0
-	v_RLC_b1	= NULL;	// beta_1
-	v_RLC_b2	= NULL;	// beta_2
+	v_RLC_dJdV	= NULL;
+	v_RLC_aV	= NULL;
+	v_RLC_aQ	= NULL;
+	v_RLC_aJ	= NULL;
+	v_RLC_vcd	= NULL;
+	v_RLC_vvd	= NULL;
+	m_dT_half	= 0.0;
 
 	// Additional containers
 	v_RLC_dir = NULL;
@@ -83,13 +84,12 @@ Operator_Ext_LumpedRLC::~Operator_Ext_LumpedRLC()
 		delete[] v_RLC_i2v;
 
 		// Series circuit coefficients
-		delete[] v_RLC_vv2;
-		delete[] v_RLC_vj1;
-		delete[] v_RLC_vj2;
+		delete[] v_RLC_dJdV;
+		delete[] v_RLC_aV;
+		delete[] v_RLC_aQ;
+		delete[] v_RLC_aJ;
+		delete[] v_RLC_vcd;
 		delete[] v_RLC_vvd;
-		delete[] v_RLC_ib0;
-		delete[] v_RLC_b1;
-		delete[] v_RLC_b2;
 
 		// Additional containers
 		delete[] v_RLC_dir;
@@ -131,13 +131,12 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 	vector<double>  v_ilv;
 	vector<double>	v_i2v;
 
-	vector<double>	v_vv2;
-	vector<double>	v_vj1;
-	vector<double>	v_vj2;
+	vector<double>	v_dJdV;
+	vector<double>	v_aV;
+	vector<double>	v_aQ;
+	vector<double>	v_aJ;
+	vector<double>	v_vcd;
 	vector<double>	v_vvd;
-	vector<double>	v_ib0;
-	vector<double>	v_b1;
-	vector<double>	v_b2;
 
 	// Lumped RLC parameters
 	double R, L, C;
@@ -151,13 +150,17 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 	v_ilv.clear();
 	v_i2v.clear();
 
-	v_vv2.clear();
-	v_vj1.clear();
-	v_vj2.clear();
+	v_dJdV.clear();
+	v_aV.clear();
+	v_aQ.clear();
+	v_aJ.clear();
+	v_vcd.clear();
 	v_vvd.clear();
-	v_ib0.clear();
-	v_b1.clear();
-	v_b2.clear();
+
+	// Edges whose capacitance this extension lowers below the value the
+	// timestep was computed from (see the stabilization pass below).
+	struct StabRec { size_t k; unsigned int pos[3]; int dir; unsigned int iPos; double Cnat; double dG; bool series; };
+	vector<StabRec> stab;
 
 	// Obtain from CSX (continuous structure) all the lumped RLC properties
 	// Properties are material properties, not the objects themselves
@@ -291,20 +294,53 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 						dG = (std::isnan(R) || R == 0.0) ? 0.0 : (1.0/R)*Ncells_0/Npar,
 						dC = std::isnan(C) ? 0.0 : C*Ncells_0/Npar;
 
-				// Series ADE coefficients. When C is absent (dC==0) use the RL-only
-				// closed form to avoid dividing by dC.
-				double ib0 = 0.0, b1 = 0.0, b2 = 0.0;
-				if (dC == 0.0)
+				// Series trapezoidal state-space coefficients (luikore e5aa1ec).
+				// The element current is split as
+				//     J[n] = A*Vd[n] + B,   B = aV*Vd[n-1] + aQ*q[n-1] + aJ*J[n-1],
+				// with q the series charge; the node coupling
+				//     Vd[n] = Vraw - (dT/2Cd)*(J[n] + J[n-1])
+				// is solved implicitly with vvd. Every branch is trapezoidal and well
+				// conditioned in FP32. The old second-order recursion formed
+				// b1*ib0 ~ -2 by cancellation and, for L/C slow against dT (e.g.
+				// 1 uH / 100 pF at ps timesteps), went unstable -- NaN, CPU and GPU.
+				double A = 0.0, aV = 0.0, aQ = 0.0, aJ = 0.0;
+				if (lumpedType == CSPropLumpedElement::SERIES)
 				{
-					ib0 = dT/(2.0*dL + dT*dR);
-					b1  = -4.0*dL/dT;
-					b2  = (2.0*dL - dT*dR)/dT;
-				}
-				else
-				{
-					ib0 = 2.0*dT*dC/(4.0*dL*dC + 2.0*dT*dR*dC + dT*dT);
-					b1  = (dT*dT - 4.0*dL*dC)/(dT*dC);
-					b2  = (4.0*dL*dC - 2.0*dT*dR*dC + dT*dT)/(2.0*dT*dC);
+					if (dL > 0.0 && dC > 0.0)			// series RLC / LC
+					{
+						double m = 1.0 + dT*dR/(2.0*dL) + dT*dT/(4.0*dL*dC);
+						A  = dT/(2.0*dL*m);
+						aV = A;
+						aQ = -2.0*A/dC;
+						aJ = 2.0/m - 1.0;
+					}
+					else if (dL > 0.0)					// series RL / L
+					{
+						double den = dL/dT + dR/2.0;
+						A  = 0.5/den;
+						aV = A;
+						aJ = (dL/dT - dR/2.0)/den;
+					}
+					else if (dC > 0.0)					// series RC / C
+					{
+						if (dR > 0.0)
+						{
+							double K = 2.0*dR*dC + dT;
+							A  = 2.0*dC/K;
+							aV = -dT/(dR*K);
+							aQ = -(2.0*dR*dC - dT)/(dR*dC*K);
+						}
+						else
+						{
+							A  = 2.0*dC/dT;
+							aV = -A;
+							aJ = -1.0;
+						}
+					}
+					else if (dR > 0.0)					// series R only
+						A = 1.0/dR;
+					else
+						cerr << "Operator_Ext_LumpedRLC::BuildExtension: Warning, series element without R, L or C -- treated as open" << endl;
 				}
 
 				// Special case: If this is a parallel resonant circuit, and there is no
@@ -333,6 +369,11 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 							{
 								case CSPropLumpedElement::PARALLEL:
 									// Update capacitor either way.
+									if ((dC > 0) && (dC < m_Op->EC_C[dir][iPos]))
+									{
+										StabRec r = {v_dir.size(), {pos[0],pos[1],pos[2]}, dir, (unsigned int)iPos, m_Op->EC_C[dir][iPos], dG, false};
+										stab.push_back(r);
+									}
 									if (dC > 0)
 										m_Op->EC_C[dir][iPos] = dC;
 									else
@@ -367,13 +408,12 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 										}
 									}
 
-									v_vv2.push_back(0.0);
-									v_vj1.push_back(0.0);
-									v_vj2.push_back(0.0);
+									v_dJdV.push_back(0.0);
+									v_aV.push_back(0.0);
+									v_aQ.push_back(0.0);
+									v_aJ.push_back(0.0);
+									v_vcd.push_back(0.0);
 									v_vvd.push_back(1.0);
-									v_ib0.push_back(0.0);
-									v_b1.push_back(0.0);
-									v_b2.push_back(0.0);
 
 									// Update with discrete component values of
 									m_Op->Calc_ECOperatorPos(dir,pos);
@@ -400,22 +440,28 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 									// Check if the "parasitic" capcitance is not small enough
 									if (Zcd_min < LUMPED_RLC_Z_FACT*Zmin)
 									{
+										StabRec r = {v_dir.size(), {pos[0],pos[1],pos[2]}, dir, (unsigned int)iPos, (double)Cd, 0.0, true};
 										Cd = 1.0/(2*PI*fMax*Zmin*LUMPED_RLC_Z_FACT);
 										m_Op->EC_C[dir][iPos] = Cd;
+										if (Cd < r.Cnat)
+											stab.push_back(r);
 									}
 
 									// No contribution from parallel inductor
 									v_ilv.push_back(0.0);
 									v_i2v.push_back(0.0);
 
-									// Contributions from series resistor and inductor
-									v_vv2.push_back(0.5*dT*ib0/Cd);
-									v_vj1.push_back(0.5*dT*(b1*ib0 - 1.0)/Cd);
-									v_vj2.push_back(0.5*dT*b2*ib0/Cd);
-									v_vvd.push_back(1.0/(1.0 + 0.5*dT*ib0/Cd));
-									v_ib0.push_back(ib0);
-									v_b1.push_back(b1);
-									v_b2.push_back(b2);
+									// Series state-space coefficients; vcd/vvd use the
+									// (possibly clamped) cell capacitance Cd.
+									{
+										double vcd = 0.5*dT/Cd;
+										v_dJdV.push_back(A);
+										v_aV.push_back(aV);
+										v_aQ.push_back(aQ);
+										v_aJ.push_back(aJ);
+										v_vcd.push_back(vcd);
+										v_vvd.push_back(1.0/(1.0 + vcd*A));
+									}
 
 									m_Op->Calc_ECOperatorPos(dir,pos);
 
@@ -479,7 +525,64 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 	}
 
 	// Start data storage
+	// Stabilization pass. The timestep was fixed from the material capacitances
+	// before any extension was built; lowering an edge capacitance afterwards
+	// (the parasitic-capacitance clamp of a series element whose impedance at
+	// fMax is high, or a parallel C below the cell's own) raises that cell's
+	// local resonance above what dT supports, and the run diverges -- NaN within
+	// the first few thousand steps for e.g. a 1 uH series choke with a GHz
+	// excitation, on every engine. Raise each such edge just enough (bisection
+	// against the Rennings_2 node criterion used for dT) to stay stable. Raising
+	// a capacitance can only help its neighbours, so one pass suffices.
+	{
+		size_t nRaised = 0;
+		double worst = 1.0;
+		const bool dbg = getenv("OPENEMS_DEBUG_RLC_STAB")!=NULL;
+		for (size_t r = 0; r < stab.size(); ++r)
+		{
+			StabRec& R = stab[r];
+			if (dbg)
+				cerr << "RLC stab: edge " << R.dir << " @(" << R.pos[0] << "," << R.pos[1] << "," << R.pos[2] << ") C " << m_Op->EC_C[R.dir][R.iPos]
+				     << " (natural " << R.Cnat << ") node dT " << m_Op->MinNodeTimestepAround(R.pos) << " vs dT " << dT << (R.series ? " series" : " parallel") << endl;
+			if (m_Op->MinNodeTimestepAround(R.pos) >= dT)
+				continue;
+			double lo = m_Op->EC_C[R.dir][R.iPos], hi = R.Cnat, lo0 = lo;
+			m_Op->EC_C[R.dir][R.iPos] = hi;
+			if (m_Op->MinNodeTimestepAround(R.pos) >= dT)
+			{
+				for (int it = 0; it < 48; ++it)
+				{
+					double mid = sqrt(lo*hi);
+					m_Op->EC_C[R.dir][R.iPos] = mid;
+					if (m_Op->MinNodeTimestepAround(R.pos) >= dT)
+						hi = mid;
+					else
+						lo = mid;
+				}
+			}
+			m_Op->EC_C[R.dir][R.iPos] = hi;
+			worst = max(worst, hi/lo0);
+			m_Op->Calc_ECOperatorPos(R.dir, R.pos);
+			if (R.series)
+			{
+				double vcd = 0.5*dT/hi;
+				v_vcd[R.k] = vcd;
+				v_vvd[R.k] = 1.0/(1.0 + vcd*v_dJdV[R.k]);
+			}
+			else
+				v_i2v[R.k] = (dT/hi)/(1.0 + dT*R.dG/(2.0*hi));
+			++nRaised;
+		}
+		if (nRaised)
+			cerr << "Operator_Ext_LumpedRLC::BuildExtension: Warning, raised the capacitance of " << nRaised
+			     << " lumped-element edge(s) by up to " << worst << "x to keep them stable at the timestep "
+			     << "(the requested value is below what dT supports there)." << endl;
+	}
+
 	RLC_count = v_dir.size();
+
+	// Half the timestep for the trapezoidal charge integration
+	m_dT_half = 0.5*dT;
 
 	// values
 	if (RLC_count)
@@ -492,13 +595,12 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 		v_RLC_i2v 	= new FDTD_FLOAT[RLC_count];
 
 		// Series circuit coefficients
-		v_RLC_vv2 = new FDTD_FLOAT[RLC_count];
-		v_RLC_vj1 = new FDTD_FLOAT[RLC_count];
-		v_RLC_vj2 = new FDTD_FLOAT[RLC_count];
+		v_RLC_dJdV = new FDTD_FLOAT[RLC_count];
+		v_RLC_aV = new FDTD_FLOAT[RLC_count];
+		v_RLC_aQ = new FDTD_FLOAT[RLC_count];
+		v_RLC_aJ = new FDTD_FLOAT[RLC_count];
+		v_RLC_vcd = new FDTD_FLOAT[RLC_count];
 		v_RLC_vvd = new FDTD_FLOAT[RLC_count];
-		v_RLC_ib0 = new FDTD_FLOAT[RLC_count];
-		v_RLC_b1 = new FDTD_FLOAT[RLC_count];
-		v_RLC_b2 = new FDTD_FLOAT[RLC_count];
 
 		v_RLC_pos = new unsigned int*[3];
 		for (unsigned int dIdx = 0 ; dIdx < 3 ; ++dIdx)
@@ -510,13 +612,12 @@ bool Operator_Ext_LumpedRLC::BuildExtension()
 		COPY_V2A(v_ilv, v_RLC_ilv);
 		COPY_V2A(v_i2v, v_RLC_i2v);
 
-		COPY_V2A(v_vv2,v_RLC_vv2);
-		COPY_V2A(v_vj1,v_RLC_vj1);
-		COPY_V2A(v_vj2,v_RLC_vj2);
+		COPY_V2A(v_dJdV,v_RLC_dJdV);
+		COPY_V2A(v_aV,v_RLC_aV);
+		COPY_V2A(v_aQ,v_RLC_aQ);
+		COPY_V2A(v_aJ,v_RLC_aJ);
+		COPY_V2A(v_vcd,v_RLC_vcd);
 		COPY_V2A(v_vvd,v_RLC_vvd);
-		COPY_V2A(v_ib0,v_RLC_ib0);
-		COPY_V2A(v_b1,v_RLC_b1);
-		COPY_V2A(v_b2,v_RLC_b2);
 
 		for (unsigned int dIdx = 0 ; dIdx < 3 ; ++dIdx)
 			COPY_V2A(v_pos[dIdx],v_RLC_pos[dIdx]);

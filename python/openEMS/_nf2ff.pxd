@@ -29,6 +29,8 @@ cdef extern from "openEMS/nf2ff.h":
 
         void SetCacheEnabled(bool enable)
         bool RecomputeForAngles(vector[float] theta, vector[float] phi) nogil
+        void SetCacheOnly(bool val)
+        bool RecomputeSubset(vector[float] theta, vector[float] phi, vector[float] center, vector[size_t] freq_idx) nogil
 
         void SetRadius(float radius)
         void SetPermittivity(vector[float] permittivity);
