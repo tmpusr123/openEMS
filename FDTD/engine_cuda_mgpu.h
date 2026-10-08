@@ -6,6 +6,7 @@
 #include <vector>
 #include <unordered_set>
 #include <mutex>
+#include <complex>
 
 //! One GPU's slab of the simulation domain.
 //
@@ -64,12 +65,17 @@ public:
 	virtual void LaunchChunkAsync(unsigned int iterTS);
 	virtual bool WaitChunk();
 
-	// On-device field gather is single-GPU only for now; decline so dumps use
-	// the host interpolation path (already fast + pipelined on multi-GPU).
-	virtual int RegisterFieldGather(const std::vector<unsigned int>&,
-	                                const std::vector<unsigned int>&,
-	                                const std::vector<float>&,
-	                                bool, size_t, float**) { return -1; }
+	// On-device field-dump gather / running DFT, split across the slabs: each
+	// output point is evaluated on a slab holding every field value its
+	// stencil reads (owned planes plus the halo planes), with the same CSR row
+	// and kernel as the single-GPU engine -- so results are bit-identical to it.
+	virtual int RegisterFieldGather(const std::vector<unsigned int>& offsets,
+	                                const std::vector<unsigned int>& src,
+	                                const std::vector<float>& coeff,
+	                                bool useCurr, size_t nOut, float** hostOut);
+	virtual long GetGatherTS(int id) const;
+	virtual bool EnableFieldDFT(int id, size_t nFreq, const FieldDFTClient* client);
+	virtual long ReadFieldDFT(int id, size_t freq, std::complex<float>* host);
 
 	virtual double CalcFastEnergy();
 
@@ -104,6 +110,14 @@ protected:
 
 private:
 	void RunOneTimestepMg(int parity);
+
+	// UPML folded into the update kernels (decided before the first step)
+	void DecideFusedPMLMg();
+	bool m_mg_fused_checked = false;
+	class Engine_Ext_United_UPML* m_mg_fused = NULL;
+	std::vector<uint3> m_mg_int_lo, m_mg_int_hi;   // per slab, slab-real x
+	template<typename IdxT> void LaunchVoltageMgFused(int g);
+	template<typename IdxT> void LaunchCurrentMgFused(int g);
 	void LaunchChunkBodyMg(unsigned int iterTS);   // async front half of IterateTS
 	void FinishChunkBodyMg(unsigned int iterTS);   // sync/readback back half
 	void HaloSendVolt(int parity);   // step 3 sends+records (all slabs)
@@ -113,6 +127,31 @@ private:
 	void SelectiveReadbackMg();
 	void SelectiveReadbackFinishMg();
 	void UploadHostMirror();
+
+	// per-slab part of one registered field gather
+	struct MgGatherSlab {
+		size_t        nOut = 0;              // outputs evaluated on this slab
+		std::vector<unsigned int> out_idx;   // their global output indices
+		unsigned int *d_offsets = NULL, *d_src = NULL;
+		float        *d_coeff = NULL, *d_out = NULL, *h_out = NULL;  // h_out pinned
+		float2       *d_dft = NULL;          // nFreq x nOut running-DFT sums
+	};
+	struct MgGather {
+		size_t nOut = 0;
+		bool   useCurr = false;
+		long   ts = -1;
+		float *h_out = NULL;                 // pinned, global output order
+		const FieldDFTClient *dft_client = NULL;
+		size_t nFreq = 0;
+		long   dft_samples = 0;
+		std::vector<std::complex<float> > dft_factors;
+		std::vector<MgGatherSlab> slab;
+	};
+	std::vector<MgGather> m_mg_gathers;
+	void RunFieldGathersMg();             // enqueue on the slab streams (chunk finish)
+	void ScatterFieldGathersMg();         // after the sync: per-slab results -> h_out
+	void FreeFieldGathersMg();
+	void FreeMgGather(MgGather &G);
 
 	int  m_num_slabs;
 	bool m_virtual;

@@ -23,6 +23,7 @@
 #include "FDTD/engine_interface_fdtd.h"
 #include "field_gather_backend.h"
 #include <cstdlib>
+#include <chrono>
 
 ProcessFields::ProcessFields(Engine_Interface_Base* eng_if) : Processing(eng_if)
 {
@@ -303,6 +304,7 @@ void ProcessFields::SetupGpuGather()
 	size_t NI=numLines[0], NJ=numLines[1], NK=numLines[2];
 	size_t nOut = 3*NI*NJ*NK;
 	if (nOut==0) return;
+	std::chrono::steady_clock::time_point _ts0 = std::chrono::steady_clock::now();
 
 	// Build each point's 3-component stencil once (BuildFieldStencil returns all
 	// 3 at once) and bucket entries per component. The output buffer is laid out
@@ -361,7 +363,11 @@ void ProcessFields::SetupGpuGather()
 			}
 	}
 
+	double _tb = std::chrono::duration<double>(std::chrono::steady_clock::now() - _ts0).count();
 	int id = be->RegisterFieldGather(offsets, src, coeff, useCurr, nOut, &m_gpu_hostbuf);
+	if (getenv("OPENEMS_PROF"))
+		fprintf(stderr, "[PROF] GPU dump stencil: host build %.2fs, engine register %.2fs\n", _tb,
+		        std::chrono::duration<double>(std::chrono::steady_clock::now() - _ts0).count() - _tb);
 	if (id>=0) { m_gpu_backend = be; m_gpu_dump_id = id; }
 	if (getenv("OPENEMS_PROF") && id>=0)
 		fprintf(stderr, "[PROF] GPU dump stencil built: %zu outputs, %zu entries (%.0f MB device)\n",

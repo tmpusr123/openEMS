@@ -63,6 +63,10 @@ public:
 	bool IsFusedMain() const {return m_fused_main;}
 	bool IsMultiGPU() const {return m_mgpu;}
 	const std::vector<upml_block_t>& HostBlocks() const {return m_h_blks;}
+	//! multi-GPU: the unclipped blocks (global coordinates; no device data)
+	//! and, per slab, the clipped blocks as uploaded (slab-local x incl. ghost)
+	const std::vector<upml_block_t>& GlobalBlocks() const {return mg_global;}
+	const std::vector<upml_block_t>& SlabBlocks(int g) const {return mg_h_blks.at(g);}
 
 	virtual void DoPreVoltageUpdates() {Engine_Ext_United_UPML::DoPreVoltageUpdates(0);};
 	virtual void DoPreVoltageUpdates(int threadID);
@@ -124,6 +128,8 @@ private:
     std::vector<int>           mg_nblocks;    // per slab: clipped block count
     std::vector<int>           mg_maxcells;   // per slab: max cells over its blocks
     std::vector<std::pair<int,void*> > mg_allocs;   // (device, ptr) for cleanup
+    std::vector<std::vector<upml_block_t> > mg_h_blks; // per slab: host copy of the block array
+    std::vector<upml_block_t>  mg_global;     // unclipped blocks, global coordinates
     void SetEngineMg(class Engine_cuda_mgpu* mg);
 
 };

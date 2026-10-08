@@ -126,6 +126,11 @@ public:
 
 
 protected:
+	// PML folding helpers shared with the multi-GPU engine
+	static const char* PmlInterior(const std::vector<struct upml_block_t>& B, const unsigned int N[3],
+	                               unsigned int lo[3], unsigned int hi[3]);
+	const char* PmlPriorityCheck(class Engine_Ext_United_UPML* up);
+
 
 	Engine_cuda(const Operator_CUDA* op);
 	const Operator_CUDA* Op;

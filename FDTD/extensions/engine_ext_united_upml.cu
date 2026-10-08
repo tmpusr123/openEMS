@@ -28,6 +28,16 @@ void Engine_Ext_United_UPML::SetEngineMg(Engine_cuda_mgpu* mg)
     mg_blks.assign(nslab, NULL);
     mg_nblocks.assign(nslab, 0);
     mg_maxcells.assign(nslab, 0);
+    mg_h_blks.assign(nslab, std::vector<upml_block_t>());
+    mg_global.clear();
+    for (size_t b = 0; b < m_Op_UPML_List->size(); ++b)
+    {
+        Operator_Ext_UPML *op = m_Op_UPML_List->at(b);
+        upml_block_t gb = {};
+        gb.start = dim3(op->m_StartPos[0], op->m_StartPos[1], op->m_StartPos[2]);
+        gb.lines = dim3(op->m_numLines[0], op->m_numLines[1], op->m_numLines[2]);
+        mg_global.push_back(gb);
+    }
 
     for (int g = 0; g < nslab; ++g)
     {
@@ -120,6 +130,7 @@ void Engine_Ext_United_UPML::SetEngineMg(Engine_cuda_mgpu* mg)
         mg_allocs.push_back(std::make_pair(c.device, (void*)d_blks));
         mg_blks[g] = d_blks;
         mg_nblocks[g] = (int)blocks.size();
+        mg_h_blks[g] = blocks;
     }
 }
 

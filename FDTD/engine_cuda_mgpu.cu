@@ -21,6 +21,15 @@
 #include "hemi/grid_stride_range.h"
 #include "tools/constants.h"
 #include "engine_cuda_coeff.h"
+#include "engine_cuda_gather.cuh"
+#include "extensions/engine_ext_united_upml.h"
+#include "extensions/engine_ext_steadystate.h"
+#include <climits>
+#include <thread>
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <algorithm>
 
 #include <sys/time.h>
 
@@ -123,6 +132,216 @@ void updateCurrentsMgKernel(FDTD_FLOAT * __restrict__ curr, const FDTD_FLOAT * _
             i[1] = i[1] * iiiv[1].x + iiiv[1].y;
             i[2] = i[2] * iiiv[2].x + iiiv[2].y;
         }
+    }
+}
+
+// ---- 2-D tiled box kernels and UPML-folded PML kernels (see engine_cuda.cu).
+// Same per-cell arithmetic as updateVoltagesMgKernel / updateCurrentsMgKernel;
+// xr is the slab-real plane (0..nx_real-1), field offsets carry the ghost plane.
+#define MG_TILE_Z 32
+#define MG_TILE_Y 8
+template<typename IdxT>
+__global__
+void updateVoltagesMgBoxKernel(FDTD_FLOAT * __restrict__ volt, const FDTD_FLOAT * __restrict__ curr,
+                               const IdxT * __restrict__ op_index, const FDTD_FLOAT * __restrict__ vv_vi_table,
+                               int ny, int nz, bool is_first, uint3 lo, uint3 hi)
+{
+    int z = lo.z + blockIdx.x * MG_TILE_Z + threadIdx.x;
+    int y = lo.y + blockIdx.y * MG_TILE_Y + threadIdx.y;
+    int xr = lo.x + blockIdx.z;
+    if (z >= (int)hi.z || y >= (int)hi.y) return;
+    int plane = ny * nz;
+    int cell = (xr * ny + y) * nz + z;
+    {
+        int offs = (cell + plane) * 3;
+
+        const FDTD_FLOAT* ix = curr + ((!is_first || xr != 0) ? offs - plane * 3 : offs);
+        const FDTD_FLOAT* iy = curr + ((y != 0) ? offs - nz * 3 : offs);
+        const FDTD_FLOAT* iz = curr + ((z != 0) ? offs - 3 : offs);
+
+        float2 vvvi[3];
+        const FDTD_FLOAT* c = vv_vi_table + (size_t)op_index[cell] * 6;
+
+        vvvi[0] = *(float2*)(c);
+        vvvi[1] = *(float2*)(c + 2);
+        vvvi[2] = *(float2*)(c + 4);
+
+        FDTD_FLOAT i[3];
+        const FDTD_FLOAT *p = curr + offs;
+        i[0] = *p++;
+        i[1] = *p++;
+        i[2] = *p++;
+
+        vvvi[0].y *= (i[2] - iy[2] - i[1] + iz[1]);
+        vvvi[1].y *= (i[0] - iz[0] - i[2] + ix[2]);
+        vvvi[2].y *= (i[1] - ix[1] - i[0] + iy[0]);
+
+        FDTD_FLOAT* v = volt + offs;
+        v[0] = v[0] * vvvi[0].x + vvvi[0].y;
+        v[1] = v[1] * vvvi[1].x + vvvi[1].y;
+        v[2] = v[2] * vvvi[2].x + vvvi[2].y;
+    }
+}
+
+template<typename IdxT>
+__global__
+void updateCurrentsMgBoxKernel(FDTD_FLOAT * __restrict__ curr, const FDTD_FLOAT * __restrict__ volt,
+                               const IdxT * __restrict__ op_index, const FDTD_FLOAT * __restrict__ ii_iv_table,
+                               int ny, int nz, int nplanes, uint3 lo, uint3 hi)
+{
+    int z = lo.z + blockIdx.x * MG_TILE_Z + threadIdx.x;
+    int y = lo.y + blockIdx.y * MG_TILE_Y + threadIdx.y;
+    int xr = lo.x + blockIdx.z;
+    if (z >= (int)hi.z || y >= (int)hi.y || xr >= nplanes) return;
+    int plane = ny * nz;
+    int cell = (xr * ny + y) * nz + z;
+    int offs = (cell + plane) * 3;
+    if ((y < ny - 1) && (z < nz - 1)) {
+
+        const FDTD_FLOAT* vbase = volt + offs;
+        const FDTD_FLOAT* vx = vbase + (plane * 3);
+        const FDTD_FLOAT* vy = vbase + (3 * nz);
+        const FDTD_FLOAT* vz = vbase + 3;
+
+        float2 iiiv[3];
+        const FDTD_FLOAT* c = ii_iv_table + (size_t)op_index[cell] * 6;
+
+        iiiv[0] = *(float2 *)(&c[0]);
+        iiiv[1] = *(float2 *)(&c[2]);
+        iiiv[2] = *(float2 *)(&c[4]);
+
+        FDTD_FLOAT v[3];
+        v[0] = vbase[0];
+        v[1] = vbase[1];
+        v[2] = vbase[2];
+
+        iiiv[0].y *= (v[2] - vy[2] - v[1] + vz[1]);
+        iiiv[1].y *= (v[0] - vz[0] - v[2] + vx[2]);
+        iiiv[2].y *= (v[1] - vx[1] - v[0] + vy[0]);
+
+        FDTD_FLOAT* i = curr + offs;
+        i[0] = i[0] * iiiv[0].x + iiiv[0].y;
+        i[1] = i[1] * iiiv[1].x + iiiv[1].y;
+        i[2] = i[2] * iiiv[2].x + iiiv[2].y;
+    }
+}
+
+// one clipped PML block (blk.start.x is slab-local incl. the ghost plane)
+template<typename IdxT>
+__global__
+void pmlVoltFusedMgKernel(FDTD_FLOAT * __restrict__ volt, const FDTD_FLOAT * __restrict__ curr,
+                          const IdxT * __restrict__ op_index, const FDTD_FLOAT * __restrict__ vv_vi_table,
+                          int ny, int nz, bool is_first, upml_block_t blk)
+{
+    int lz = blockIdx.x * MG_TILE_Z + threadIdx.x;
+    int ly = blockIdx.y * MG_TILE_Y + threadIdx.y;
+    int lx = blockIdx.z;
+    if (lz >= (int)blk.lines.z || ly >= (int)blk.lines.y) return;
+    int xr = (int)blk.start.x - 1 + lx, y = blk.start.y + ly, z = blk.start.z + lz;
+    int plane = ny * nz;
+    int cell = (xr * ny + y) * nz + z;
+    int offs = (cell + plane) * 3;
+    int li = ((lx * blk.lines.y + ly) * blk.lines.z + lz) * 3;
+    FDTD_FLOAT* F = blk.volt_flux + li;
+
+    FDTD_FLOAT f[3], vin[3];
+    for (int n = 0; n < 3; ++n) {
+        const FDTD_FLOAT *cp = blk.coeff_table + (int)blk.coeff_index[li + n] * 6;
+        FDTD_FLOAT *vp = volt + offs + n;
+        FDTD_FLOAT *fp = F + n;
+        f[n] = cp[0] * vp[0] - cp[2] * fp[0];   // vv, vvfo
+        vin[n] = fp[0];
+    }
+
+    const FDTD_FLOAT* ix = curr + ((!is_first || xr != 0) ? offs - plane * 3 : offs);
+    const FDTD_FLOAT* iy = curr + ((y != 0) ? offs - nz * 3 : offs);
+    const FDTD_FLOAT* iz = curr + ((z != 0) ? offs - 3 : offs);
+
+    float2 vvvi[3];
+    const FDTD_FLOAT* c = vv_vi_table + (size_t)op_index[cell] * 6;
+    vvvi[0] = *(float2*)(c);
+    vvvi[1] = *(float2*)(c + 2);
+    vvvi[2] = *(float2*)(c + 4);
+
+    FDTD_FLOAT i[3];
+    const FDTD_FLOAT *p = curr + offs;
+    i[0] = *p++;
+    i[1] = *p++;
+    i[2] = *p++;
+
+    vvvi[0].y *= (i[2] - iy[2] - i[1] + iz[1]);
+    vvvi[1].y *= (i[0] - iz[0] - i[2] + ix[2]);
+    vvvi[2].y *= (i[1] - ix[1] - i[0] + iy[0]);
+
+    FDTD_FLOAT vout[3];
+    vout[0] = vin[0] * vvvi[0].x + vvvi[0].y;
+    vout[1] = vin[1] * vvvi[1].x + vvvi[1].y;
+    vout[2] = vin[2] * vvvi[2].x + vvvi[2].y;
+
+    for (int n = 0; n < 3; ++n) {
+        FDTD_FLOAT vvfn = blk.coeff_table[(int)blk.coeff_index[li + n] * 6 + 1];
+        F[n] = vout[n];
+        volt[offs + n] = f[n] + vvfn * vout[n];
+    }
+}
+
+template<typename IdxT>
+__global__
+void pmlCurrFusedMgKernel(FDTD_FLOAT * __restrict__ curr, const FDTD_FLOAT * __restrict__ volt,
+                          const IdxT * __restrict__ op_index, const FDTD_FLOAT * __restrict__ ii_iv_table,
+                          int ny, int nz, int nplanes, upml_block_t blk)
+{
+    int lz = blockIdx.x * MG_TILE_Z + threadIdx.x;
+    int ly = blockIdx.y * MG_TILE_Y + threadIdx.y;
+    int lx = blockIdx.z;
+    if (lz >= (int)blk.lines.z || ly >= (int)blk.lines.y) return;
+    int xr = (int)blk.start.x - 1 + lx, y = blk.start.y + ly, z = blk.start.z + lz;
+    int plane = ny * nz;
+    int cell = (xr * ny + y) * nz + z;
+    int offs = (cell + plane) * 3;
+    int li = ((lx * blk.lines.y + ly) * blk.lines.z + lz) * 3;
+    FDTD_FLOAT* F = blk.curr_flux + li;
+
+    FDTD_FLOAT g[3], iin[3], iout[3];
+    for (int n = 0; n < 3; ++n) {
+        const FDTD_FLOAT *cp = blk.coeff_table + (int)blk.coeff_index[li + n] * 6;
+        FDTD_FLOAT *ip = curr + offs + n;
+        FDTD_FLOAT *fp = F + n;
+        g[n] = cp[3] * ip[0] - cp[5] * fp[0];   // ii, iifo
+        iin[n] = fp[0];
+    }
+    iout[0] = iin[0]; iout[1] = iin[1]; iout[2] = iin[2];
+
+    if ((xr < nplanes) && (y < ny - 1) && (z < nz - 1)) {
+        const FDTD_FLOAT* vbase = volt + offs;
+        const FDTD_FLOAT* vx = vbase + (plane * 3);
+        const FDTD_FLOAT* vy = vbase + (3 * nz);
+        const FDTD_FLOAT* vz = vbase + 3;
+
+        float2 iiiv[3];
+        const FDTD_FLOAT* c = ii_iv_table + (size_t)op_index[cell] * 6;
+        iiiv[0] = *(float2 *)(&c[0]);
+        iiiv[1] = *(float2 *)(&c[2]);
+        iiiv[2] = *(float2 *)(&c[4]);
+
+        FDTD_FLOAT v[3];
+        v[0] = vbase[0];
+        v[1] = vbase[1];
+        v[2] = vbase[2];
+
+        iiiv[0].y *= (v[2] - vy[2] - v[1] + vz[1]);
+        iiiv[1].y *= (v[0] - vz[0] - v[2] + vx[2]);
+        iiiv[2].y *= (v[1] - vx[1] - v[0] + vy[0]);
+
+        iout[0] = iin[0] * iiiv[0].x + iiiv[0].y;
+        iout[1] = iin[1] * iiiv[1].x + iiiv[1].y;
+        iout[2] = iin[2] * iiiv[2].x + iiiv[2].y;
+    }
+
+    for (int n = 0; n < 3; ++n) {
+        FDTD_FLOAT iifn = blk.coeff_table[(int)blk.coeff_index[li + n] * 6 + 4];
+        F[n] = iout[n];
+        curr[offs + n] = g[n] + iifn * iout[n];
     }
 }
 
@@ -353,6 +572,7 @@ void Engine_cuda_mgpu::Init()
 
 void Engine_cuda_mgpu::Reset()
 {
+    FreeFieldGathersMg();
     for (size_t g = 0; g < m_ctx.size(); ++g)
     {
         CudaSlabCtx &c = m_ctx[g];
@@ -412,6 +632,86 @@ int Engine_cuda_mgpu::OwnerSlab(int x) const
 // timestep
 // ---------------------------------------------------------------------------
 
+// Fold the UPML into the update kernels on every slab (see
+// Engine_cuda::DecideFusedPML): the PML-free interior, clipped to each slab,
+// as one box kernel, and each slab's clipped PML blocks as pre+core+post.
+void Engine_cuda_mgpu::DecideFusedPMLMg()
+{
+    m_mg_fused_checked = true;
+    m_mg_fused = NULL;
+    const char* fe = getenv("OPENEMS_CUDA_FUSE_PML");
+    if ((fe && fe[0]=='0') || getenv("OPENEMS_CUDA_LEGACY_KERNELS")) return;
+    Engine_Ext_United_UPML* up = NULL;
+    for (size_t n = 0; n < m_Eng_exts.size(); ++n)
+        if (Engine_Ext_United_UPML* u = dynamic_cast<Engine_Ext_United_UPML*>(m_Eng_exts[n])) up = u;
+    if (!up || !up->IsMultiGPU() || up->GlobalBlocks().empty()) return;
+    const char* why = PmlPriorityCheck(up);
+    unsigned int N[3] = {numLines[0], numLines[1], numLines[2]};
+    unsigned int lo[3], hi[3];
+    if (!why) why = PmlInterior(up->GlobalBlocks(), N, lo, hi);
+    if (why)
+    {
+        if (getenv("OPENEMS_PROF"))
+            fprintf(stderr, "[PROF] mgpu: PML not folded into the update kernels: %s\n", why);
+        return;
+    }
+    m_mg_int_lo.assign(m_num_slabs, make_uint3(0, 0, 0));
+    m_mg_int_hi.assign(m_num_slabs, make_uint3(0, 0, 0));
+    for (int g = 0; g < m_num_slabs; ++g)
+    {
+        const CudaSlabCtx &c = m_ctx[g];
+        int x0 = std::max((int)lo[0], c.x_start), x1 = std::min((int)hi[0], c.x_end);
+        if (x1 <= x0) continue;   // no interior on this slab
+        m_mg_int_lo[g] = make_uint3(x0 - c.x_start, lo[1], lo[2]);
+        m_mg_int_hi[g] = make_uint3(x1 - c.x_start, hi[1], hi[2]);
+    }
+    m_mg_fused = up;
+    up->SetFusedMain(true);
+    if (getenv("OPENEMS_PROF"))
+        fprintf(stderr, "[PROF] mgpu: PML folded into the update kernels: interior [%u,%u)x[%u,%u)x[%u,%u)\n",
+                lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+}
+
+static inline dim3 mgTileGrid(unsigned int nx, unsigned int ny, unsigned int nz)
+{
+    return dim3((nz + MG_TILE_Z - 1) / MG_TILE_Z, (ny + MG_TILE_Y - 1) / MG_TILE_Y, nx);
+}
+
+template<typename IdxT>
+void Engine_cuda_mgpu::LaunchVoltageMgFused(int g)
+{
+    CudaSlabCtx &c = m_ctx[g];
+    int ny = numLines[1], nz = numLines[2];
+    const IdxT* idx = (const IdxT*)m_d_idx[g];
+    dim3 blk(MG_TILE_Z, MG_TILE_Y, 1);
+    uint3 lo = m_mg_int_lo[g], hi = m_mg_int_hi[g];
+    if (hi.x > lo.x)
+        updateVoltagesMgBoxKernel<IdxT><<<mgTileGrid(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z), blk, 0, c.stream>>>(
+            c.d_volt, c.d_curr, idx, m_d_vvvi[g], ny, nz, g == 0, lo, hi);
+    const std::vector<upml_block_t>& B = m_mg_fused->SlabBlocks(g);
+    for (size_t b = 0; b < B.size(); ++b)
+        pmlVoltFusedMgKernel<IdxT><<<mgTileGrid(B[b].lines.x, B[b].lines.y, B[b].lines.z), blk, 0, c.stream>>>(
+            c.d_volt, c.d_curr, idx, m_d_vvvi[g], ny, nz, g == 0, B[b]);
+}
+
+template<typename IdxT>
+void Engine_cuda_mgpu::LaunchCurrentMgFused(int g)
+{
+    CudaSlabCtx &c = m_ctx[g];
+    int ny = numLines[1], nz = numLines[2];
+    const IdxT* idx = (const IdxT*)m_d_idx[g];
+    dim3 blk(MG_TILE_Z, MG_TILE_Y, 1);
+    int nplanes = (c.x_end - c.x_start) - (g == m_num_slabs - 1 ? 1 : 0);
+    uint3 lo = m_mg_int_lo[g], hi = m_mg_int_hi[g];
+    if (hi.x > lo.x)
+        updateCurrentsMgBoxKernel<IdxT><<<mgTileGrid(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z), blk, 0, c.stream>>>(
+            c.d_curr, c.d_volt, idx, m_d_iiiv[g], ny, nz, nplanes, lo, hi);
+    const std::vector<upml_block_t>& B = m_mg_fused->SlabBlocks(g);
+    for (size_t b = 0; b < B.size(); ++b)
+        pmlCurrFusedMgKernel<IdxT><<<mgTileGrid(B[b].lines.x, B[b].lines.y, B[b].lines.z), blk, 0, c.stream>>>(
+            c.d_curr, c.d_volt, idx, m_d_iiiv[g], ny, nz, nplanes, B[b]);
+}
+
 void Engine_cuda_mgpu::UpdateVoltages(unsigned int startX, unsigned int numX)
 {
     (void)startX; (void)numX;
@@ -420,6 +720,12 @@ void Engine_cuda_mgpu::UpdateVoltages(unsigned int startX, unsigned int numX)
     {
         CudaSlabCtx &c = m_ctx[g];
         cudaSetDevice(c.device);
+        if (m_mg_fused)
+        {
+            if (m_idx_u16[g]) LaunchVoltageMgFused<unsigned short>(g);
+            else              LaunchVoltageMgFused<unsigned int>(g);
+            continue;
+        }
         int N = (c.x_end - c.x_start) * ny * nz;
         int blocks = (N + MG_THREADS - 1) / MG_THREADS;
         if (m_idx_u16[g])
@@ -441,6 +747,12 @@ void Engine_cuda_mgpu::UpdateCurrents(unsigned int startX, unsigned int numX)
     {
         CudaSlabCtx &c = m_ctx[g];
         cudaSetDevice(c.device);
+        if (m_mg_fused)
+        {
+            if (m_idx_u16[g]) LaunchCurrentMgFused<unsigned short>(g);
+            else              LaunchCurrentMgFused<unsigned int>(g);
+            continue;
+        }
         bool is_last = (g == m_num_slabs - 1);
         int nplanes = (c.x_end - c.x_start) - (is_last ? 1 : 0);
         int N = nplanes * ny * nz;
@@ -497,6 +809,7 @@ void Engine_cuda_mgpu::HaloSendCurr(int parity)
 
 void Engine_cuda_mgpu::RunOneTimestepMg(int parity)
 {
+    if (!m_mg_fused_checked) DecideFusedPMLMg();
     int prev = parity ^ 1;
 
     // wait for the curr halo produced by the left neighbour LAST timestep
@@ -620,12 +933,16 @@ void Engine_cuda_mgpu::FinishChunkBodyMg(unsigned int iterTS)
     else
         SelectiveReadbackMg();
 
+    // on-device field-dump gathers / running DFTs (this chunk's fields)
+    RunFieldGathersMg();
+
     for (int g = 0; g < m_num_slabs; ++g)
     {
         cudaSetDevice(m_ctx[g].device);
         checkCuda(cudaStreamSynchronize(m_ctx[g].stream));
     }
     SelectiveReadbackFinishMg();
+    ScatterFieldGathersMg();
 
     m_locked = false;
     m_volt_dirty = 0;
@@ -837,4 +1154,318 @@ double Engine_cuda_mgpu::CalcFastEnergy()
         sum += m_h_energy[g];
     }
     return sum;
+}
+
+// ---------------------------------------------------------------------------
+// On-device field-dump gather + running DFT, split across the slabs
+// ---------------------------------------------------------------------------
+
+// Register a field-dump stencil (global CSR, see FieldGatherBackend). After a
+// timestep a slab holds valid volt values on global planes [x_start, x_end]
+// (its own planes + the right ghost the volt halo fills) and valid curr
+// values on [x_start-1, x_end-1] (own + the left ghost the curr halo fills).
+// Every output point is assigned to a slab covering all planes its stencil
+// row reads (a row spans at most two neighbouring planes, so one always
+// exists), and its row is copied unchanged with local source indices -- the
+// gather then sums exactly what the single-GPU kernel sums, in the same order.
+int Engine_cuda_mgpu::RegisterFieldGather(const std::vector<unsigned int>& offsets,
+                                          const std::vector<unsigned int>& src,
+                                          const std::vector<float>& coeff,
+                                          bool useCurr, size_t nOut, float** hostOut)
+{
+    if (offsets.size() != nOut + 1 || src.size() != coeff.size() || nOut == 0)
+        return -1;
+    const size_t plane3 = (size_t)numLines[1] * numLines[2] * 3;
+
+    typedef std::chrono::steady_clock _C; _C::time_point _t0 = _C::now();
+    const bool _prof = getenv("OPENEMS_PROF") != NULL;
+    // Assign rows to slabs in parallel chunks (the stencils of a whole-domain
+    // monitor run to ~1e8 entries; a serial pass took seconds per dump).
+    std::vector<int> owner(nOut, -1);
+    std::atomic<int> bad(0);
+    {
+        unsigned int nth = std::max(1u, std::min(64u, std::thread::hardware_concurrency()));
+        std::vector<std::thread> th;
+        for (unsigned int t = 0; t < nth; ++t)
+            th.emplace_back([&, t]() {
+                size_t o0 = nOut * t / nth, o1 = nOut * (t + 1) / nth;
+                for (size_t o = o0; o < o1; ++o)
+                {
+                    unsigned int a = offsets[o], b = offsets[o + 1];
+                    long xmin = LONG_MAX, xmax = -1;
+                    for (unsigned int e = a; e < b; ++e)
+                    {
+                        long x = (long)(src[e] / plane3);
+                        xmin = std::min(xmin, x); xmax = std::max(xmax, x);
+                    }
+                    if (xmax < 0) { owner[o] = 0; continue; }          // empty row: any slab
+                    int cand[2] = { OwnerSlab((int)xmin), OwnerSlab((int)xmax) };
+                    for (int k = 0; k < 2 && owner[o] < 0; ++k)
+                    {
+                        const CudaSlabCtx &c = m_ctx[cand[k]];
+                        long lo = useCurr ? (long)c.x_start - (cand[k] > 0 ? 1 : 0) : (long)c.x_start;
+                        long hi = useCurr ? (long)c.x_end - 1 : (long)c.x_end - (cand[k] + 1 < m_num_slabs ? 0 : 1);
+                        if (xmin >= lo && xmax <= hi) owner[o] = cand[k];
+                    }
+                    if (owner[o] < 0) ++bad;
+                }
+            });
+        for (auto &x : th) x.join();
+    }
+    if (bad)
+    {
+        fprintf(stderr, "Engine_cuda_mgpu: field-dump stencil spans more than one halo plane -- using the host path\n");
+        return -1;
+    }
+
+    double _t_owner = std::chrono::duration<double>(_C::now() - _t0).count();
+    // per-slab CSR in two parallel passes over row chunks (count, then fill at
+    // prefix-summed offsets) -- rows keep their global order within a slab
+    std::vector<std::vector<unsigned int> > Loff(m_num_slabs), Lsrc(m_num_slabs), Lidx(m_num_slabs);
+    std::vector<std::vector<float> > Lcoeff(m_num_slabs);
+    {
+        unsigned int nth = std::max(1u, std::min(64u, std::thread::hardware_concurrency()));
+        const int S = m_num_slabs;
+        std::vector<size_t> rows((size_t)nth * S, 0), ents((size_t)nth * S, 0);
+        auto run = [&](std::function<void(unsigned int)> f) {
+            std::vector<std::thread> th;
+            for (unsigned int t = 0; t < nth; ++t) th.emplace_back(f, t);
+            for (auto &x : th) x.join();
+        };
+        run([&](unsigned int t) {
+            size_t o0 = nOut * t / nth, o1 = nOut * (t + 1) / nth;
+            for (size_t o = o0; o < o1; ++o)
+            {
+                rows[(size_t)t * S + owner[o]] += 1;
+                ents[(size_t)t * S + owner[o]] += offsets[o + 1] - offsets[o];
+            }
+        });
+        std::vector<size_t> rbase((size_t)nth * S), ebase((size_t)nth * S);
+        for (int g = 0; g < S; ++g)
+        {
+            size_t r = 0, e = 0;
+            for (unsigned int t = 0; t < nth; ++t)
+            {
+                rbase[(size_t)t * S + g] = r; ebase[(size_t)t * S + g] = e;
+                r += rows[(size_t)t * S + g]; e += ents[(size_t)t * S + g];
+            }
+            Lidx[g].resize(r); Loff[g].resize(r + 1); Lsrc[g].resize(e); Lcoeff[g].resize(e);
+            Loff[g][0] = 0;
+        }
+        run([&](unsigned int t) {
+            size_t o0 = nOut * t / nth, o1 = nOut * (t + 1) / nth;
+            std::vector<size_t> r(S), e(S);
+            for (int g = 0; g < S; ++g) { r[g] = rbase[(size_t)t * S + g]; e[g] = ebase[(size_t)t * S + g]; }
+            for (size_t o = o0; o < o1; ++o)
+            {
+                int g = owner[o];
+                const CudaSlabCtx &c = m_ctx[g];
+                Lidx[g][r[g]] = (unsigned int)o;
+                for (unsigned int q = offsets[o]; q < offsets[o + 1]; ++q)
+                {
+                    size_t x = src[q] / plane3, rem = src[q] - x * plane3;
+                    Lsrc[g][e[g]] = (unsigned int)((x - c.x_start + 1) * plane3 + rem);
+                    Lcoeff[g][e[g]] = coeff[q];
+                    ++e[g];
+                }
+                ++r[g];
+                Loff[g][r[g]] = (unsigned int)e[g];
+            }
+        });
+    }
+
+    double _t_csr = std::chrono::duration<double>(_C::now() - _t0).count() - _t_owner;
+    MgGather G;
+    G.nOut = nOut;
+    G.useCurr = useCurr;
+    G.slab.resize(m_num_slabs);
+    for (int g = 0; g < m_num_slabs; ++g)
+    {
+        MgGatherSlab &S = G.slab[g];
+        const CudaSlabCtx &c = m_ctx[g];
+        std::vector<unsigned int> &loff = Loff[g], &lsrc = Lsrc[g];
+        std::vector<float> &lcoeff = Lcoeff[g];
+        S.out_idx.swap(Lidx[g]);
+        S.nOut = S.out_idx.size();
+        if (S.nOut == 0) continue;
+        cudaSetDevice(c.device);
+        size_t need = loff.size() * 4 + lsrc.size() * 8 + S.nOut * 4;
+        size_t freeB = 0, totB = 0;
+        if (cudaMemGetInfo(&freeB, &totB) != cudaSuccess || need > freeB / 2)
+        {
+            cudaGetLastError();
+            fprintf(stderr, "Engine_cuda_mgpu: field-dump gather does not fit on device %d -- using the host path\n", c.device);
+            FreeMgGather(G);   // releases what this registration allocated so far
+            return -1;
+        }
+        checkCuda(cudaMalloc(&S.d_offsets, loff.size() * sizeof(unsigned int)));
+        checkCuda(cudaMalloc(&S.d_src, std::max<size_t>(1, lsrc.size()) * sizeof(unsigned int)));
+        checkCuda(cudaMalloc(&S.d_coeff, std::max<size_t>(1, lcoeff.size()) * sizeof(float)));
+        checkCuda(cudaMalloc(&S.d_out, S.nOut * sizeof(float)));
+        checkCuda(cudaHostAlloc(&S.h_out, S.nOut * sizeof(float), cudaHostAllocDefault));
+        checkCuda(cudaMemcpy(S.d_offsets, loff.data(), loff.size() * sizeof(unsigned int), cudaMemcpyHostToDevice));
+        if (!lsrc.empty())
+        {
+            checkCuda(cudaMemcpy(S.d_src, lsrc.data(), lsrc.size() * sizeof(unsigned int), cudaMemcpyHostToDevice));
+            checkCuda(cudaMemcpy(S.d_coeff, lcoeff.data(), lcoeff.size() * sizeof(float), cudaMemcpyHostToDevice));
+        }
+    }
+    checkCuda(cudaHostAlloc(&G.h_out, nOut * sizeof(float), cudaHostAllocDefault));
+    memset(G.h_out, 0, nOut * sizeof(float));
+    *hostOut = G.h_out;
+    m_mg_gathers.push_back(G);
+    if (_prof)
+        fprintf(stderr, "[PROF] mgpu gather register: %zu outputs, owner %.2fs, csr %.2fs, alloc+upload %.2fs\n",
+                nOut, _t_owner, _t_csr,
+                std::chrono::duration<double>(_C::now() - _t0).count() - _t_owner - _t_csr);
+    return (int)m_mg_gathers.size() - 1;
+}
+
+long Engine_cuda_mgpu::GetGatherTS(int id) const
+{
+    if (id < 0 || id >= (int)m_mg_gathers.size()) return -1;
+    return m_mg_gathers[id].ts;
+}
+
+bool Engine_cuda_mgpu::EnableFieldDFT(int id, size_t nFreq, const FieldDFTClient* client)
+{
+    if (id < 0 || id >= (int)m_mg_gathers.size() || !client || nFreq == 0) return false;
+    MgGather &G = m_mg_gathers[id];
+    if (G.dft_client) return false;
+    for (int g = 0; g < m_num_slabs; ++g)
+    {
+        MgGatherSlab &S = G.slab[g];
+        if (S.nOut == 0) continue;
+        cudaSetDevice(m_ctx[g].device);
+        size_t need = S.nOut * nFreq * sizeof(float2);
+        size_t freeB = 0, totB = 0;
+        if (cudaMemGetInfo(&freeB, &totB) != cudaSuccess || need > freeB / 2 ||
+            cudaMalloc(&S.d_dft, need) != cudaSuccess)
+        {
+            cudaGetLastError();
+            S.d_dft = NULL;
+            for (int h = 0; h < g; ++h)
+                if (G.slab[h].d_dft) { cudaSetDevice(m_ctx[h].device); cudaFree(G.slab[h].d_dft); G.slab[h].d_dft = NULL; }
+            fprintf(stderr, "Engine_cuda_mgpu: device DFT does not fit -- using host DFT\n");
+            return false;
+        }
+        checkCuda(cudaMemset(S.d_dft, 0, need));
+    }
+    G.nFreq = nFreq;
+    G.dft_client = client;
+    G.dft_samples = 0;
+    return true;
+}
+
+long Engine_cuda_mgpu::ReadFieldDFT(int id, size_t freq, std::complex<float>* host)
+{
+    if (id < 0 || id >= (int)m_mg_gathers.size()) return -1;
+    MgGather &G = m_mg_gathers[id];
+    if (!G.dft_client || freq >= G.nFreq) return -1;
+    std::vector<float2> buf;
+    for (int g = 0; g < m_num_slabs; ++g)
+    {
+        MgGatherSlab &S = G.slab[g];
+        if (S.nOut == 0) continue;
+        cudaSetDevice(m_ctx[g].device);
+        checkCuda(cudaStreamSynchronize(m_ctx[g].stream));
+        buf.resize(S.nOut);
+        checkCuda(cudaMemcpy(buf.data(), S.d_dft + freq * S.nOut, S.nOut * sizeof(float2), cudaMemcpyDeviceToHost));
+        for (size_t k = 0; k < S.nOut; ++k)
+            host[S.out_idx[k]] = std::complex<float>(buf[k].x, buf[k].y);
+    }
+    return G.dft_samples;
+}
+
+// Enqueued at chunk finish on every slab stream, after the chunk's timesteps.
+void Engine_cuda_mgpu::RunFieldGathersMg()
+{
+    if (m_mg_gathers.empty()) return;
+    // The left ghost's curr plane of the last timestep arrives via the curr
+    // halo, which the next timestep would wait for; wait for it here.
+    int last = (int)((m_step_counter - 1) & 1);
+    if (m_step_counter > 0)
+        for (int g = 1; g < m_num_slabs; ++g)
+        {
+            cudaSetDevice(m_ctx[g].device);
+            checkCuda(cudaStreamWaitEvent(m_ctx[g].stream, m_ev_curr[last][g - 1], 0));
+        }
+    for (size_t i = 0; i < m_mg_gathers.size(); ++i)
+    {
+        MgGather &G = m_mg_gathers[i];
+        G.ts = (long)numTS;
+        bool sample = false;
+        if (G.dft_client)
+            sample = G.dft_client->DeviceDFTFactors((unsigned int)numTS, G.dft_factors);
+        for (int g = 0; g < m_num_slabs; ++g)
+        {
+            MgGatherSlab &S = G.slab[g];
+            if (S.nOut == 0) continue;
+            const CudaSlabCtx &c = m_ctx[g];
+            cudaSetDevice(c.device);
+            const FDTD_FLOAT *fsrc = G.useCurr ? c.d_curr : c.d_volt;
+            int n = (int)S.nOut, block = 128, grid = (n + block - 1) / block;
+            if (G.dft_client)
+            {
+                if (!sample) continue;
+                for (size_t f0 = 0; f0 < G.nFreq; f0 += DFT_FREQ_PER_LAUNCH)
+                {
+                    int nf = (int)std::min((size_t)DFT_FREQ_PER_LAUNCH, G.nFreq - f0);
+                    DFTWeights W;
+                    for (int k = 0; k < nf; ++k)
+                        W.w[k] = make_float2(G.dft_factors[f0 + k].real(), G.dft_factors[f0 + k].imag());
+                    fieldGatherDFTKernel<<<grid, block, 0, c.stream>>>(fsrc, S.d_offsets, S.d_src, S.d_coeff,
+                                                                       S.d_dft + f0 * S.nOut, n, nf, W);
+                }
+            }
+            else
+            {
+                fieldGatherKernel<<<grid, block, 0, c.stream>>>(fsrc, S.d_offsets, S.d_src, S.d_coeff, S.d_out, n);
+                checkCuda(cudaMemcpyAsync(S.h_out, S.d_out, S.nOut * sizeof(float), cudaMemcpyDeviceToHost, c.stream));
+            }
+        }
+        if (G.dft_client && sample) ++G.dft_samples;
+    }
+}
+
+void Engine_cuda_mgpu::ScatterFieldGathersMg()
+{
+    for (size_t i = 0; i < m_mg_gathers.size(); ++i)
+    {
+        MgGather &G = m_mg_gathers[i];
+        if (G.dft_client) continue;
+        for (int g = 0; g < m_num_slabs; ++g)
+        {
+            const MgGatherSlab &S = G.slab[g];
+            for (size_t k = 0; k < S.nOut; ++k)
+                G.h_out[S.out_idx[k]] = S.h_out[k];
+        }
+    }
+}
+
+void Engine_cuda_mgpu::FreeFieldGathersMg()
+{
+    for (size_t i = 0; i < m_mg_gathers.size(); ++i)
+        FreeMgGather(m_mg_gathers[i]);
+    m_mg_gathers.clear();
+}
+
+void Engine_cuda_mgpu::FreeMgGather(MgGather &G)
+{
+    {
+        for (size_t g = 0; g < G.slab.size() && g < m_ctx.size(); ++g)
+        {
+            MgGatherSlab &S = G.slab[g];
+            cudaSetDevice(m_ctx[g].device);
+            if (S.d_offsets) cudaFree(S.d_offsets);
+            if (S.d_src)     cudaFree(S.d_src);
+            if (S.d_coeff)   cudaFree(S.d_coeff);
+            if (S.d_out)     cudaFree(S.d_out);
+            if (S.d_dft)     cudaFree(S.d_dft);
+            if (S.h_out)     cudaFreeHost(S.h_out);
+        }
+        if (G.h_out) cudaFreeHost(G.h_out);
+        G.h_out = NULL;
+        G.slab.clear();
+    }
 }

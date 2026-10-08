@@ -29,6 +29,7 @@
 
 #include "tools/cuda/check.h"
 #include "engine_cuda_coeff.h"
+#include "engine_cuda_gather.cuh"
 #include "extensions/engine_ext_united_upml.h"
 #include "extensions/engine_ext_excitation.h"
 #include "extensions/engine_ext_lumpedRLC.h"
@@ -618,45 +619,14 @@ void Engine_cuda::Reset() {
 // UPML folded in (fused pre + core + post per PML cell, PML-free interior as a
 // separate box) whenever that is exact -- see pmlVoltFusedKernel. Falls back
 // to the separate UPML kernels if any condition is not met.
-void Engine_cuda::DecideFusedPML()
+// The PML-free interior of a UPML block set: one box, the blocks disjoint and,
+// with it, exactly tiling the N[0]xN[1]xN[2] grid. Returns NULL and fills
+// lo/hi, or the reason it is not so.
+const char* Engine_cuda::PmlInterior(const std::vector<upml_block_t>& B, const unsigned int N[3],
+                                     unsigned int lo[3], unsigned int hi[3])
 {
-    m_launch_checked = true;
-    const char* lg = getenv("OPENEMS_CUDA_LEGACY_KERNELS");
-    m_legacy_kernels = (lg && lg[0]=='1');
-    m_int_lo = make_uint3(0, 0, 0);
-    m_int_hi = make_uint3(numLines[0], numLines[1], numLines[2]);
-    m_fused_upml = NULL;
-    if (m_legacy_kernels) return;
-    const char* fe = getenv("OPENEMS_CUDA_FUSE_PML");
-    if (fe && fe[0]=='0') return;
-
-    Engine_Ext_United_UPML* up = NULL;
-    for (size_t n = 0; n < m_Eng_exts.size(); ++n)
-        if (Engine_Ext_United_UPML* u = dynamic_cast<Engine_Ext_United_UPML*>(m_Eng_exts[n])) up = u;
-    if (!up || up->IsMultiGPU() || up->HostBlocks().empty()) return;
-    const std::vector<upml_block_t>& B = up->HostBlocks();
-
-    // No extension can act between the UPML pre-update, the core update and
-    // the UPML post-update: Engine runs the pre-hooks in reverse priority
-    // order and the post-hooks in priority order, and UPML has the highest
-    // priority, so its pre-hook is always the last thing before the core
-    // update and its post-hook the first thing after it. Folding the three
-    // into one kernel therefore keeps every other extension's view of the
-    // fields exactly as it was, whatever the extension set. That rests on
-    // UPML outranking every extension with a pre/post hook; steady state
-    // (higher priority) only has Apply2* hooks.
     const char* why = NULL;
-    for (size_t n = 0; n < m_Eng_exts.size() && !why; ++n)
-    {
-        Engine_Extension* e = m_Eng_exts[n];
-        if (e != up && e->GetPriority() >= up->GetPriority() && !dynamic_cast<Engine_Ext_SteadyState*>(e))
-            why = "an extension outranks the UPML";
-    }
-
-    // The PML-free interior must be one box, the blocks disjoint and, with it,
-    // exactly covering the grid.
-    unsigned int N[3] = {numLines[0], numLines[1], numLines[2]};
-    unsigned int lo[3] = {0, 0, 0}, hi[3] = {N[0], N[1], N[2]};
+    for (int a = 0; a < 3; ++a) { lo[a] = 0; hi[a] = N[a]; }
     if (!why)
     {
         for (size_t b = 0; b < B.size(); ++b)
@@ -694,6 +664,53 @@ void Engine_cuda::DecideFusedPML()
         }
         if (!why && sum != total) why = "PML blocks and interior do not tile the grid";
     }
+    return why;
+}
+
+//! UPML must outrank every extension with pre/post hooks (see DecideFusedPML)
+const char* Engine_cuda::PmlPriorityCheck(Engine_Ext_United_UPML* up)
+{
+    for (size_t n = 0; n < m_Eng_exts.size(); ++n)
+    {
+        Engine_Extension* e = m_Eng_exts[n];
+        if (e != up && e->GetPriority() >= up->GetPriority() && !dynamic_cast<Engine_Ext_SteadyState*>(e))
+            return "an extension outranks the UPML";
+    }
+    return NULL;
+}
+
+void Engine_cuda::DecideFusedPML()
+{
+    m_launch_checked = true;
+    const char* lg = getenv("OPENEMS_CUDA_LEGACY_KERNELS");
+    m_legacy_kernels = (lg && lg[0]=='1');
+    m_int_lo = make_uint3(0, 0, 0);
+    m_int_hi = make_uint3(numLines[0], numLines[1], numLines[2]);
+    m_fused_upml = NULL;
+    if (m_legacy_kernels) return;
+    const char* fe = getenv("OPENEMS_CUDA_FUSE_PML");
+    if (fe && fe[0]=='0') return;
+
+    Engine_Ext_United_UPML* up = NULL;
+    for (size_t n = 0; n < m_Eng_exts.size(); ++n)
+        if (Engine_Ext_United_UPML* u = dynamic_cast<Engine_Ext_United_UPML*>(m_Eng_exts[n])) up = u;
+    if (!up || up->IsMultiGPU() || up->HostBlocks().empty()) return;
+    const std::vector<upml_block_t>& B = up->HostBlocks();
+
+    // No extension can act between the UPML pre-update, the core update and
+    // the UPML post-update: Engine runs the pre-hooks in reverse priority
+    // order and the post-hooks in priority order, and UPML has the highest
+    // priority, so its pre-hook is always the last thing before the core
+    // update and its post-hook the first thing after it. Folding the three
+    // into one kernel therefore keeps every other extension's view of the
+    // fields exactly as it was, whatever the extension set. That rests on
+    // UPML outranking every extension with a pre/post hook; steady state
+    // (higher priority) only has Apply2* hooks.
+    const char* why = PmlPriorityCheck(up);
+
+    unsigned int N[3] = {numLines[0], numLines[1], numLines[2]};
+    unsigned int lo[3], hi[3];
+    if (!why) why = PmlInterior(B, N, lo, hi);
     if (why)
     {
         if (getenv("OPENEMS_PROF"))
@@ -1120,8 +1137,6 @@ __global__ void fieldGatherKernel(const FDTD_FLOAT* __restrict__ src,
 // sum += v * w, with the product and the sum rounded separately -- the same
 // two roundings as the host's  field_fd += field_td * exp_jwt_2_dt  on
 // std::complex<float>, so the sums are bit-identical to the host DFT.
-#define DFT_FREQ_PER_LAUNCH 64
-struct DFTWeights { float2 w[DFT_FREQ_PER_LAUNCH]; };
 
 __global__ void fieldGatherDFTKernel(const FDTD_FLOAT* __restrict__ src,
                                      const unsigned int* __restrict__ offsets,

@@ -18,10 +18,8 @@
  Pass criteria (per case)
    cuda vs cpu:          every probe and HDF5 dump within 1e-4 of its peak
    cuda vs cuda-legacy:  bit-identical (the fast paths change no arithmetic)
-   cuda vs cuda-mgpu:    probes bit-identical; HDF5 field dumps within 1e-6 of
-                         their peak (the multi-GPU engine interpolates dumps on
-                         the host in double precision, one GPU on the device in
-                         float -- differences of ~1e-7 are that, not physics)
+   cuda vs cuda-mgpu:    bit-identical (dumps included: both engines gather them
+                         on the device with the same stencils)
  A case whose model the CUDA engine refuses (setup error code 4: an extension
  without a CUDA implementation) must be refused by every CUDA run and is
  reported as such; cylindrical meshes always run on the CPU operator.
@@ -577,8 +575,6 @@ def main(selected):
             ok = False; print('  FAIL: ' + ', '.join(f'{n} ({d:.1e})' for n, d in diff))
         for other in ('cuda-legacy', 'cuda-mgpu'):
             diff, _, _, worst = compare_outputs(paths['cuda'], paths[other], rtol=0)
-            if other == 'cuda-mgpu':
-                diff = [(n, d) for n, d in diff if not ('.h5:' in n and d <= 1e-6)]
             print(f'  cuda vs {other}: ' + ('bit-identical' if not diff else 'DIFFERS ' + ', '.join(f'{n} ({d:.1e})' for n, d in diff[:4])))
             if diff:
                 ok = False
