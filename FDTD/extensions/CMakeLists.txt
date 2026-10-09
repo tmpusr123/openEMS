@@ -13,6 +13,7 @@ if (WITH_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/engine_ext_debyematerial.cu
     ${CMAKE_CURRENT_SOURCE_DIR}/engine_ext_tfsf.cu
     ${CMAKE_CURRENT_SOURCE_DIR}/engine_ext_steadystate.cu
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine_ext_invisible_pml.cu
   )
 endif()
 

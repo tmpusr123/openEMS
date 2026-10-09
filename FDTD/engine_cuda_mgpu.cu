@@ -448,12 +448,16 @@ void Engine_cuda_mgpu::Init()
     int gnx = numLines[0], ny = numLines[1], nz = numLines[2];
     size_t planeF = (size_t)ny * nz * 3;
 
-    // balanced contiguous slabs along x
+    // balanced contiguous slabs along x, unless the operator placed the cuts
+    // (around invisible-PML sheets, which must not be split)
     m_ctx.resize(m_num_slabs);
+    const Operator_CUDA* opc = dynamic_cast<const Operator_CUDA*>(Op);
+    const std::vector<int>* starts = (opc && (int)opc->SlabStarts().size() == m_num_slabs + 1
+                                      && opc->SlabStarts().back() == gnx) ? &opc->SlabStarts() : NULL;
     int base = gnx / m_num_slabs, rem = gnx % m_num_slabs, xcur = 0;
     for (int g = 0; g < m_num_slabs; ++g)
     {
-        int nx = base + (g < rem ? 1 : 0);
+        int nx = starts ? (*starts)[g + 1] - (*starts)[g] : base + (g < rem ? 1 : 0);
         m_ctx[g].x_start = xcur;
         m_ctx[g].x_end   = xcur + nx;
         xcur += nx;

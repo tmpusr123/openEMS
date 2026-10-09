@@ -13,4 +13,7 @@ from openEMS.openEMS import openEMS
 #   mgpu_field_dft -- the multi-GPU CUDA engine gathers field dumps and runs
 #                     their frequency-domain DFT on the devices, as fast as
 #                     one GPU per slab (before, dumps forced a slow host path).
-FEATURES = frozenset(["mgpu_field_dft"])
+#   invisible_pml_cuda -- the invisible-PML sheet (waveguide ports) runs on the
+#                     CUDA engine, single- and multi-GPU (before, compute had to
+#                     force the CPU engine for any model with a waveguide port).
+FEATURES = frozenset(["mgpu_field_dft", "invisible_pml_cuda"])

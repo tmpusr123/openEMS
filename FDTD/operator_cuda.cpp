@@ -8,6 +8,7 @@
 #include "extensions/operator_ext_lorentzmaterial.h"
 #include "extensions/operator_ext_debyematerial.h"
 #include "extensions/operator_ext_mur_abc.h"
+#include "extensions/operator_ext_invisible_pml.h"
 
 #include "tools/array_ops.h"
 
@@ -59,6 +60,7 @@ Engine* Operator_CUDA::CreateEngine()
 	// plane-wave source; hooks early-return at 0 taps) is also allowed since
 	// openEMS registers it unconditionally. Anything else -> single-GPU.
 	bool ext_ok = true;
+	std::vector<std::pair<int,int> > keep;   // x spans that must not be cut
 	for (size_t n = 0; n < GetNumberOfExtentions(); ++n)
 	{
 		Operator_Extension* ext = GetExtension(n);
@@ -74,6 +76,15 @@ Engine* Operator_CUDA::CreateEngine()
 		if (dynamic_cast<Operator_Ext_DebyeMaterial*>(ext)) continue;
 		// Mur ABC is mgpu-ported (faces clipped per slab; all reads in-slab).
 		if (dynamic_cast<Operator_Ext_Mur_ABC*>(ext)) continue;
+		// Invisible PML (waveguide ports): the block stays on one slab; the
+		// cuts are placed around every sheet below.
+		if (Operator_Ext_InvisiblePML* ip = dynamic_cast<Operator_Ext_InvisiblePML*>(ext))
+		{
+			unsigned int lo, hi;
+			ip->MainXSpan(lo, hi);
+			keep.push_back(std::make_pair((int)lo, (int)hi));
+			continue;
+		}
 		if (Operator_Ext_TFSF* t = dynamic_cast<Operator_Ext_TFSF*>(ext))
 			{ if (!t->IsActive()) continue; }
 		ext_ok = false;
@@ -108,11 +119,70 @@ Engine* Operator_CUDA::CreateEngine()
 		nslabs = 1;
 	}
 
+	// Cuts around the invisible-PML sheets; fewer slabs if they cannot all be
+	// avoided with every slab at least MIN_PLANES_PER_SLAB thick.
+	m_slab_starts.clear();
+	if (nslabs > 1 && !keep.empty())
+	{
+		int nx = (int)GetNumberOfLines(0, true);
+		int want = nslabs;
+		while (nslabs > 1 && !ComputeSlabStarts(nx, nslabs, MIN_PLANES_PER_SLAB, keep, m_slab_starts))
+			--nslabs;
+		if (nslabs < want)
+			cout << "openEMS CUDA: " << want << " slabs would split an invisible-PML sheet; using "
+			     << nslabs << "." << endl;
+		if (nslabs <= 1)
+			m_slab_starts.clear();
+	}
+
 	if (nslabs > 1)
 		m_Engine = Engine_cuda_mgpu::New(this, nslabs, virt, m_cuda_device_number);
 	else
 		m_Engine = Engine_cuda::New(this, m_cuda_device_number);
 	return m_Engine;
+}
+
+bool Operator_CUDA::ComputeSlabStarts(int nx, int nslabs, int minPlanes,
+	const std::vector<std::pair<int,int> >& keep, std::vector<int>& starts)
+{
+	starts.assign(nslabs + 1, 0);
+	int base = nx / nslabs, rem = nx % nslabs, xcur = 0;
+	for (int g = 0; g < nslabs; ++g)
+	{
+		starts[g] = xcur;
+		xcur += base + (g < rem ? 1 : 0);
+	}
+	starts[nslabs] = nx;
+	// slab g starts at starts[g]: a span [lo,hi] is split if lo < starts[g] <= hi.
+	// Move such a cut to the nearer side of the span; repeat, since a move can
+	// land in another span.
+	for (int g = 1; g < nslabs; ++g)
+	{
+		for (int guard = 0; guard < 64; ++guard)
+		{
+			bool moved = false;
+			for (size_t k = 0; k < keep.size(); ++k)
+			{
+				int lo = keep[k].first, hi = keep[k].second;
+				int c = starts[g];
+				if (lo < c && c <= hi)
+				{
+					starts[g] = (c - lo <= hi + 1 - c) ? lo : hi + 1;
+					moved = true;
+				}
+			}
+			if (!moved)
+				break;
+		}
+	}
+	for (int g = 0; g < nslabs; ++g)
+		if (starts[g + 1] - starts[g] < minPlanes)
+			return false;
+	for (int g = 1; g < nslabs; ++g)
+		for (size_t k = 0; k < keep.size(); ++k)
+			if (keep[k].first < starts[g] && starts[g] <= keep[k].second)
+				return false;
+	return true;
 }
 
 void Operator_CUDA::setCUDAdevice(unsigned int cuda_device_number) {

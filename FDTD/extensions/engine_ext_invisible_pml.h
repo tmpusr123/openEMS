@@ -23,6 +23,9 @@
 #include "FDTD/operator.h"
 #include "engine_extension_dispatcher.h"
 #include "tools/arraylib/array_nijk.h"
+#if WITH_CUDA
+#include <cuda_runtime.h>
+#endif
 
 class Operator_Ext_InvisiblePML;
 
@@ -54,6 +57,15 @@ public:
 	virtual void DoPreCurrentUpdates(int threadID);
 	virtual void Apply2Current() {Engine_Ext_InvisiblePML::Apply2Current(0);}
 	virtual void Apply2Current(int threadID);
+
+#if WITH_CUDA
+	// On the CUDA engine the virtual PML lives on the device and the four hooks
+	// run as kernels, so the whole timestep stays captured in the CUDA graph.
+	// Multi-GPU: Operator_CUDA chooses the slab cuts so that no sheet window is
+	// split; the block then lives wholly on the slab that owns it.
+	virtual void SetEngine(Engine* eng);
+	virtual bool IsCUDACapable() const {return true;}
+#endif
 
 protected:
 	Operator_Ext_InvisiblePML* m_Op_PML;
@@ -90,6 +102,27 @@ protected:
 	ArrayLib::ArrayNIJK<FDTD_FLOAT> volt_flux;
 	ArrayLib::ArrayNIJK<FDTD_FLOAT> curr;
 	ArrayLib::ArrayNIJK<FDTD_FLOAT> curr_flux;
+
+#if WITH_CUDA
+	void DoPreVoltageUpdatesCuda();
+	void DoPostVoltageUpdatesCuda();
+	void DoPreCurrentUpdatesCuda();
+	void Apply2CurrentCuda();
+	void FreeDevice();
+
+	bool m_cuda = false;
+	int  m_dev = 0;					// device holding the virtual block
+	cudaStream_t m_stream = 0;		// 0: the per-thread default stream (single GPU)
+	FDTD_FLOAT* d_mainVolt = NULL;	// main (or owning slab's) field arrays
+	FDTD_FLOAT* d_mainCurr = NULL;
+	dim3 m_mainDim;					// their dimensions
+	int  m_mainOfs[3];				// main/slab index of local index 0, per axis
+	int  m_mainIntD, m_mainGhostD;	// sheet / ghost plane index along ny in that array
+	// virtual fields and coefficients, same layout as the host ArrayNIJK ((i*L1+j)*L2+k)*3+n
+	FDTD_FLOAT *d_volt = NULL, *d_volt_flux = NULL, *d_curr = NULL, *d_curr_flux = NULL;
+	FDTD_FLOAT *d_vv_m = NULL, *d_vi_m = NULL, *d_vv = NULL, *d_vvfo = NULL, *d_vvfn = NULL;
+	FDTD_FLOAT *d_ii_m = NULL, *d_iv_m = NULL, *d_ii = NULL, *d_iifo = NULL, *d_iifn = NULL;
+#endif
 };
 
 #endif // ENGINE_EXT_INVISIBLE_PML_H

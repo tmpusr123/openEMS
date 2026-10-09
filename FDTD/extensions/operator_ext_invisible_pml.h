@@ -78,6 +78,23 @@ public:
 
 	virtual void ShowStat(std::ostream &ostr) const;
 
+	//! The main-grid x planes this sheet reads or writes, inclusive: its sheet and
+	//! ghost planes if x-normal, otherwise its window's x lines. Multi-GPU slab
+	//! cuts must not fall inside (the CUDA engine keeps the block on one slab).
+	void MainXSpan(unsigned int& lo, unsigned int& hi) const
+	{
+		if (m_ny==0)
+		{
+			lo = m_normalSignPositive ? m_sheetX0[0] : m_sheetX0[0]-1;
+			hi = m_sheetX0[0];
+		}
+		else
+		{
+			lo = m_sheetX0[0];
+			hi = m_sheetX0[0] + m_numLines[0] - 1;
+		}
+	}
+
 protected:
 	//! Local index along ny of the sheet plane and of the ghost (dual) layer
 	unsigned int InterfaceLine() const {return m_normalSignPositive ? m_numCells : 1;}

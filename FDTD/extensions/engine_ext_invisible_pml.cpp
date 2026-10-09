@@ -20,6 +20,9 @@
 #include "FDTD/engine.h"
 #include "FDTD/engine_sse.h"
 #include "tools/useful.h"
+#if WITH_CUDA
+#include "FDTD/engine_cuda.h"
+#endif
 
 Engine_Ext_InvisiblePML::Engine_Ext_InvisiblePML(Operator_Ext_InvisiblePML* op_ext) : Engine_Extension(op_ext)
 {
@@ -70,6 +73,9 @@ Engine_Ext_InvisiblePML::Engine_Ext_InvisiblePML(Operator_Ext_InvisiblePML* op_e
 
 Engine_Ext_InvisiblePML::~Engine_Ext_InvisiblePML()
 {
+#if WITH_CUDA
+	FreeDevice();
+#endif
 }
 
 void Engine_Ext_InvisiblePML::SetNumberOfThreads(int nrThread)
@@ -203,6 +209,13 @@ void Engine_Ext_InvisiblePML::DoPreVoltageUpdatesImpl(EngType* eng, int threadID
 
 void Engine_Ext_InvisiblePML::DoPreVoltageUpdates(int threadID)
 {
+#if WITH_CUDA
+	if (m_cuda)
+	{
+		if (threadID==0) DoPreVoltageUpdatesCuda();
+		return;
+	}
+#endif
 	ENG_DISPATCH_ARGS(DoPreVoltageUpdatesImpl, threadID);
 }
 
@@ -234,6 +247,13 @@ void Engine_Ext_InvisiblePML::DoPostVoltageUpdatesImpl(EngType* eng, int threadI
 
 void Engine_Ext_InvisiblePML::DoPostVoltageUpdates(int threadID)
 {
+#if WITH_CUDA
+	if (m_cuda)
+	{
+		if (threadID==0) DoPostVoltageUpdatesCuda();
+		return;
+	}
+#endif
 	ENG_DISPATCH_ARGS(DoPostVoltageUpdatesImpl, threadID);
 }
 
@@ -263,6 +283,13 @@ void Engine_Ext_InvisiblePML::DoPreCurrentUpdatesImpl(EngType* eng, int threadID
 
 void Engine_Ext_InvisiblePML::DoPreCurrentUpdates(int threadID)
 {
+#if WITH_CUDA
+	if (m_cuda)
+	{
+		if (threadID==0) DoPreCurrentUpdatesCuda();
+		return;
+	}
+#endif
 	ENG_DISPATCH_ARGS(DoPreCurrentUpdatesImpl, threadID);
 }
 
@@ -295,5 +322,12 @@ void Engine_Ext_InvisiblePML::Apply2CurrentImpl(EngType* eng, int threadID)
 
 void Engine_Ext_InvisiblePML::Apply2Current(int threadID)
 {
+#if WITH_CUDA
+	if (m_cuda)
+	{
+		if (threadID==0) Apply2CurrentCuda();
+		return;
+	}
+#endif
 	ENG_DISPATCH_ARGS(Apply2CurrentImpl, threadID);
 }
