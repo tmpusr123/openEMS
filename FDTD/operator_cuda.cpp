@@ -133,6 +133,17 @@ Engine* Operator_CUDA::CreateEngine()
 		int nx = (int)GetNumberOfLines(0, true);
 		const char* ns = getenv("OPENEMS_IPML_NO_SPLIT");
 		bool allowSplit = !(ns && ns[0] == '1');
+		// Splitting costs ~0.15 ms per slab per timestep (four event-ordered
+		// plane exchanges). Measured on 4x A10G: a 741k-cell WR430 split over 4
+		// slabs ran at 792 MCells/s against 2029 on one GPU; a 10.2M-cell patch
+		// split over 2 slabs ran at 6632 against 5776 with the cuts avoided.
+		// Below ~2M cells one GPU wins, so only split from 3M cells
+		// (OPENEMS_IPML_SPLIT_MIN_CELLS overrides).
+		long long splitMin = 3000000;
+		if (const char* sm = getenv("OPENEMS_IPML_SPLIT_MIN_CELLS"))
+			splitMin = atoll(sm);
+		if (cells < splitMin)
+			allowSplit = false;
 		// diagnostic: OPENEMS_IPML_PREFER_SPLIT=1 skips the cut avoidance (measures the exchange)
 		const char* ps = getenv("OPENEMS_IPML_PREFER_SPLIT");
 		bool preferSplit = allowSplit && ps && ps[0] == '1';
