@@ -60,7 +60,8 @@ Engine* Operator_CUDA::CreateEngine()
 	// plane-wave source; hooks early-return at 0 taps) is also allowed since
 	// openEMS registers it unconditionally. Anything else -> single-GPU.
 	bool ext_ok = true;
-	std::vector<std::pair<int,int> > keep;   // x spans that must not be cut
+	std::vector<std::pair<int,int> > keep;     // x spans better not cut
+	std::vector<std::pair<int,int> > keepHard; // x spans that must not be cut
 	for (size_t n = 0; n < GetNumberOfExtentions(); ++n)
 	{
 		Operator_Extension* ext = GetExtension(n);
@@ -76,13 +77,16 @@ Engine* Operator_CUDA::CreateEngine()
 		if (dynamic_cast<Operator_Ext_DebyeMaterial*>(ext)) continue;
 		// Mur ABC is mgpu-ported (faces clipped per slab; all reads in-slab).
 		if (dynamic_cast<Operator_Ext_Mur_ABC*>(ext)) continue;
-		// Invisible PML (waveguide ports): the block stays on one slab; the
-		// cuts are placed around every sheet below.
+		// Invisible PML (waveguide ports): the cuts are placed around every sheet
+		// below if possible; otherwise a non-x-normal sheet may be split, and the
+		// CUDA engine exchanges its coupling planes each timestep.
 		if (Operator_Ext_InvisiblePML* ip = dynamic_cast<Operator_Ext_InvisiblePML*>(ext))
 		{
 			unsigned int lo, hi;
 			ip->MainXSpan(lo, hi);
 			keep.push_back(std::make_pair((int)lo, (int)hi));
+			if (ip->IsXNormal())
+				keepHard.push_back(std::make_pair((int)lo, (int)hi));
 			continue;
 		}
 		if (Operator_Ext_TFSF* t = dynamic_cast<Operator_Ext_TFSF*>(ext))
@@ -119,18 +123,32 @@ Engine* Operator_CUDA::CreateEngine()
 		nslabs = 1;
 	}
 
-	// Cuts around the invisible-PML sheets; fewer slabs if they cannot all be
-	// avoided with every slab at least MIN_PLANES_PER_SLAB thick.
+	// Cuts around the invisible-PML sheets. If they cannot all be avoided with
+	// every slab at least MIN_PLANES_PER_SLAB thick, split the non-x-normal
+	// sheets instead (the engine exchanges their coupling planes per timestep;
+	// OPENEMS_IPML_NO_SPLIT=1 disables that and drops slabs instead).
 	m_slab_starts.clear();
 	if (nslabs > 1 && !keep.empty())
 	{
 		int nx = (int)GetNumberOfLines(0, true);
-		int want = nslabs;
-		while (nslabs > 1 && !ComputeSlabStarts(nx, nslabs, MIN_PLANES_PER_SLAB, keep, m_slab_starts))
-			--nslabs;
-		if (nslabs < want)
-			cout << "openEMS CUDA: " << want << " slabs would split an invisible-PML sheet; using "
-			     << nslabs << "." << endl;
+		const char* ns = getenv("OPENEMS_IPML_NO_SPLIT");
+		bool allowSplit = !(ns && ns[0] == '1');
+		// diagnostic: OPENEMS_IPML_PREFER_SPLIT=1 skips the cut avoidance (measures the exchange)
+		const char* ps = getenv("OPENEMS_IPML_PREFER_SPLIT");
+		bool preferSplit = allowSplit && ps && ps[0] == '1';
+		if (preferSplit || !ComputeSlabStarts(nx, nslabs, MIN_PLANES_PER_SLAB, keep, m_slab_starts))
+		{
+			const std::vector<std::pair<int,int> >& must = allowSplit ? keepHard : keep;
+			int want = nslabs;
+			while (nslabs > 1 && !ComputeSlabStarts(nx, nslabs, MIN_PLANES_PER_SLAB, must, m_slab_starts))
+				--nslabs;
+			if (nslabs < want)
+				cout << "openEMS CUDA: " << want << " slabs would split an invisible-PML sheet; using "
+				     << nslabs << "." << endl;
+			else
+				cout << "openEMS CUDA: an invisible-PML sheet spans a slab cut; its coupling planes "
+				        "are exchanged between GPUs each timestep." << endl;
+		}
 		if (nslabs <= 1)
 			m_slab_starts.clear();
 	}

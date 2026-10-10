@@ -18,6 +18,7 @@
 #ifndef ENGINE_EXT_INVISIBLE_PML_H
 #define ENGINE_EXT_INVISIBLE_PML_H
 
+#include <vector>
 #include "engine_extension.h"
 #include "FDTD/engine.h"
 #include "FDTD/operator.h"
@@ -122,6 +123,30 @@ protected:
 	FDTD_FLOAT *d_volt = NULL, *d_volt_flux = NULL, *d_curr = NULL, *d_curr_flux = NULL;
 	FDTD_FLOAT *d_vv_m = NULL, *d_vi_m = NULL, *d_vv = NULL, *d_vvfo = NULL, *d_vvfn = NULL;
 	FDTD_FLOAT *d_ii_m = NULL, *d_iv_m = NULL, *d_ii = NULL, *d_iifo = NULL, *d_iifn = NULL;
+
+	// Multi-GPU "split" mode: the sheet window crosses slab cuts. The virtual
+	// block lives on one slab (the owner); each timestep the four coupling planes
+	// (ghost currents in, sheet voltages out, sheet voltages back in, normal
+	// current out) are packed, peer-copied and unpacked per participating slab,
+	// ordered with events on the slabs' streams.
+	struct SplitPart
+	{
+		int slab, dev;
+		cudaStream_t stream;
+		FDTD_FLOAT *d_mainVolt, *d_mainCurr;
+		dim3 mainDim;
+		int xStartLocal;			// slab-local x of global x = 0 (1 - x_start)
+		int x0, x1;					// global window x lines on this slab, [x0, x1)
+		int x1c;					// same, clipped to the current-updated lines
+		FDTD_FLOAT *d_buf;			// on the slab's device
+		FDTD_FLOAT *d_stage;		// on the owner's device
+		cudaEvent_t evSlab, evOwner;
+	};
+	bool m_split = false;
+	std::vector<SplitPart> m_parts;
+	void SetEngineSplit(class Engine_cuda_mgpu* mg);
+	void GatherPlane(bool curr, int lineLocal, int mainLine);	// main -> virtual layer (comps nyP, nyPP)
+	void ScatterPlane(bool curr, int lineLocal, int mainLine);	// virtual layer -> main
 #endif
 };
 

@@ -23,6 +23,8 @@
 
 #include <cuda_runtime.h>
 #include <stdexcept>
+#include <iostream>
+#include <algorithm>
 #include "hemi/grid_stride_range.h"
 #include "tools/cuda/check.h"
 
@@ -79,7 +81,7 @@ __global__ void ipmlPreVoltKernel(IpmlGeom g, const FDTD_FLOAT* mainCurr, FDTD_F
 __global__ void ipmlPostVoltKernel(IpmlGeom g,
 	FDTD_FLOAT* volt, FDTD_FLOAT* volt_flux, const FDTD_FLOAT* curr,
 	const FDTD_FLOAT* vv, const FDTD_FLOAT* vvfo, const FDTD_FLOAT* vvfn,
-	const FDTD_FLOAT* vv_m, const FDTD_FLOAT* vi_m, FDTD_FLOAT* mainVolt)
+	const FDTD_FLOAT* vv_m, const FDTD_FLOAT* vi_m, FDTD_FLOAT* mainVolt, bool writeMain)
 {
 	int nCells = g.L[0] * g.L[1] * g.L[2];
 	for (auto t : hemi::grid_stride_range(0, 3 * nCells))
@@ -117,7 +119,7 @@ __global__ void ipmlPostVoltKernel(IpmlGeom g,
 		volt[i] = v;
 
 		// place the sheet plane into the main grid, where the PEC has zeroed it
-		if (n != g.ny && p[g.ny] == g.lineInt)
+		if (writeMain && n != g.ny && p[g.ny] == g.lineInt)
 		{
 			int pos[3];
 			pos[g.nyP]  = p[g.nyP]  + g.mainOfs[g.nyP];
@@ -152,7 +154,7 @@ __global__ void ipmlPreCurrKernel(IpmlGeom g, const FDTD_FLOAT* mainVolt, FDTD_F
 __global__ void ipmlApplyCurrKernel(IpmlGeom g,
 	FDTD_FLOAT* curr, FDTD_FLOAT* curr_flux, const FDTD_FLOAT* volt,
 	const FDTD_FLOAT* ii, const FDTD_FLOAT* iifo, const FDTD_FLOAT* iifn,
-	const FDTD_FLOAT* ii_m, const FDTD_FLOAT* iv_m, FDTD_FLOAT* mainCurr)
+	const FDTD_FLOAT* ii_m, const FDTD_FLOAT* iv_m, FDTD_FLOAT* mainCurr, bool writeMain)
 {
 	int nCells = g.L[0] * g.L[1] * g.L[2];
 	for (auto t : hemi::grid_stride_range(0, 3 * nCells))
@@ -191,13 +193,55 @@ __global__ void ipmlApplyCurrKernel(IpmlGeom g,
 		FDTD_FLOAT cv = f_help + iifn[i] * flux;
 		curr[i] = cv;
 
-		if (n == g.ny && p[g.ny] == g.lineInt)
+		if (writeMain && n == g.ny && p[g.ny] == g.lineInt)
 		{
 			int pos[3];
 			pos[g.nyP]  = p[g.nyP]  + g.mainOfs[g.nyP];
 			pos[g.nyPP] = p[g.nyPP] + g.mainOfs[g.nyPP];
 			pos[g.ny]   = g.mainInt;
 			mainCurr[mainIdx(g, n, pos)] = cv;
+		}
+	}
+}
+
+// Split mode: one plane at fixed ny between a slab's main array and a contiguous
+// buffer. x (axis 0) runs over [0, nx) from slab-local xLoc0; the other transverse
+// axis T over [0, nT) from main index tOfs. Buffer layout ((ix*nT)+it)*nComp + c.
+__global__ void ipmlMainPlaneKernel(FDTD_FLOAT* main, dim3 dim, int ny, int T, int line,
+	int xLoc0, int nx, int nT, int tOfs, int c0, int c1, int nComp, FDTD_FLOAT* buf, bool toBuf)
+{
+	for (auto k : hemi::grid_stride_range(0, nx * nT))
+	{
+		int pos[3];
+		pos[0]  = xLoc0 + k / nT;
+		pos[T]  = tOfs + k % nT;
+		pos[ny] = line;
+		int cell = (pos[0] * (int)dim.y + pos[1]) * (int)dim.z + pos[2];
+		for (int ci = 0; ci < nComp; ++ci)
+		{
+			int c = ci ? c1 : c0;
+			if (toBuf) buf[k * nComp + ci] = main[cell * 3 + c];
+			else       main[cell * 3 + c] = buf[k * nComp + ci];
+		}
+	}
+}
+
+// The same plane in the virtual block: local x from lx0, T from 0, ny = layer.
+__global__ void ipmlVirtPlaneKernel(FDTD_FLOAT* virt, int L1, int L2, int ny, int T, int layer,
+	int lx0, int nx, int nT, int c0, int c1, int nComp, FDTD_FLOAT* buf, bool toBuf)
+{
+	for (auto k : hemi::grid_stride_range(0, nx * nT))
+	{
+		int p[3];
+		p[0]  = lx0 + k / nT;
+		p[T]  = k % nT;
+		p[ny] = layer;
+		int cell = (p[0] * L1 + p[1]) * L2 + p[2];
+		for (int ci = 0; ci < nComp; ++ci)
+		{
+			int c = ci ? c1 : c0;
+			if (toBuf) buf[k * nComp + ci] = virt[cell * 3 + c];
+			else       virt[cell * 3 + c] = buf[k * nComp + ci];
 		}
 	}
 }
@@ -258,8 +302,17 @@ void Engine_Ext_InvisiblePML::SetEngine(Engine* eng)
 			if (xlo >= c.x_start && xhi < c.x_end) { owner = s; break; }
 		}
 		if (owner < 0)
-			throw std::runtime_error("Invisible PML: the sheet window is split across GPU slabs "
-			                         "(Operator_CUDA must place the cuts around it)");
+		{
+			// the window crosses slab cuts (Operator_CUDA could not avoid it with
+			// the slab count it wanted): run the block on one slab and exchange
+			// the coupling planes each timestep
+			if (m_ny == 0)
+				throw std::runtime_error("Invisible PML: an x-normal sheet is split across GPU slabs "
+				                         "(Operator_CUDA must place the cuts around it)");
+			SetEngineSplit(mg);		// sets m_dev / m_stream to the owner slab
+		}
+		else
+		{
 		const CudaSlabCtx& c = mg->Slab(owner);
 		m_dev = c.device;
 		m_stream = c.stream;
@@ -274,6 +327,7 @@ void Engine_Ext_InvisiblePML::SetEngine(Engine* eng)
 		}
 		else
 			m_mainOfs[0] -= c.x_start - 1;
+		}
 	}
 	else
 	{
@@ -310,6 +364,17 @@ void Engine_Ext_InvisiblePML::FreeDevice()
 		if (*p) cudaFree(*p);
 		*p = NULL;
 	}
+	for (size_t i = 0; i < m_parts.size(); ++i)
+	{
+		cudaSetDevice(m_parts[i].dev);
+		cudaFree(m_parts[i].d_buf);
+		cudaEventDestroy(m_parts[i].evSlab);
+		cudaSetDevice(m_dev);
+		cudaFree(m_parts[i].d_stage);
+		cudaEventDestroy(m_parts[i].evOwner);
+	}
+	m_parts.clear();
+	m_split = false;
 	m_cuda = false;
 }
 
@@ -321,6 +386,7 @@ static inline int ipmlBlocks(long long work)
 
 void Engine_Ext_InvisiblePML::DoPreVoltageUpdatesCuda()
 {
+	if (m_split) { GatherPlane(true, (int)m_lineGhost, (int)m_mainGhost); return; }
 	IPML_GEOM(g);
 	cudaSetDevice(m_dev);
 	ipmlPreVoltKernel<<<ipmlBlocks((long long)g.L[m_nyP] * g.L[m_nyPP]), IPML_THREADS, 0, m_stream>>>(
@@ -332,11 +398,13 @@ void Engine_Ext_InvisiblePML::DoPostVoltageUpdatesCuda()
 	IPML_GEOM(g);
 	cudaSetDevice(m_dev);
 	ipmlPostVoltKernel<<<ipmlBlocks(3LL * volt.size() / 3), IPML_THREADS, 0, m_stream>>>(
-		g, d_volt, d_volt_flux, d_curr, d_vv, d_vvfo, d_vvfn, d_vv_m, d_vi_m, d_mainVolt);
+		g, d_volt, d_volt_flux, d_curr, d_vv, d_vvfo, d_vvfn, d_vv_m, d_vi_m, d_mainVolt, !m_split);
+	if (m_split) ScatterPlane(false, (int)m_lineInt, (int)m_mainInt);
 }
 
 void Engine_Ext_InvisiblePML::DoPreCurrentUpdatesCuda()
 {
+	if (m_split) { GatherPlane(false, (int)m_lineInt, (int)m_mainInt); return; }
 	IPML_GEOM(g);
 	cudaSetDevice(m_dev);
 	ipmlPreCurrKernel<<<ipmlBlocks((long long)g.L[m_nyP] * g.L[m_nyPP]), IPML_THREADS, 0, m_stream>>>(
@@ -348,5 +416,139 @@ void Engine_Ext_InvisiblePML::Apply2CurrentCuda()
 	IPML_GEOM(g);
 	cudaSetDevice(m_dev);
 	ipmlApplyCurrKernel<<<ipmlBlocks(3LL * volt.size() / 3), IPML_THREADS, 0, m_stream>>>(
-		g, d_curr, d_curr_flux, d_volt, d_ii, d_iifo, d_iifn, d_ii_m, d_iv_m, d_mainCurr);
+		g, d_curr, d_curr_flux, d_volt, d_ii, d_iifo, d_iifn, d_ii_m, d_iv_m, d_mainCurr, !m_split);
+	if (m_split) ScatterPlane(true, (int)m_lineInt, (int)m_mainInt);
+}
+
+// ---------------------------------------------------------------------------
+// Multi-GPU split mode
+// ---------------------------------------------------------------------------
+
+static void ipmlCopy(FDTD_FLOAT* dst, int dstDev, const FDTD_FLOAT* src, int srcDev,
+	size_t bytes, cudaStream_t stream)
+{
+	if (dstDev == srcDev)
+		checkCuda(cudaMemcpyAsync(dst, src, bytes, cudaMemcpyDeviceToDevice, stream));
+	else
+		checkCuda(cudaMemcpyPeerAsync(dst, dstDev, src, srcDev, bytes, stream));
+}
+
+void Engine_Ext_InvisiblePML::SetEngineSplit(Engine_cuda_mgpu* mg)
+{
+	int X0 = (int)m_offset[0], X1 = X0 + (int)m_numLines[0];		// window x lines [X0, X1)
+	int T = (m_nyP == 0) ? m_nyPP : m_nyP;
+	int nT = (int)m_numLines[T];
+
+	// owner: the slab holding most of the window
+	int owner = 0, best = -1;
+	for (int s = 0; s < mg->NumSlabs(); ++s)
+	{
+		const CudaSlabCtx& c = mg->Slab(s);
+		int ov = std::min(X1, c.x_end) - std::max(X0, c.x_start);
+		if (ov > best) { best = ov; owner = s; }
+	}
+	const CudaSlabCtx& co = mg->Slab(owner);
+	m_dev = co.device;
+	m_stream = co.stream;
+	m_split = true;
+
+	m_parts.clear();
+	for (int s = 0; s < mg->NumSlabs(); ++s)
+	{
+		const CudaSlabCtx& c = mg->Slab(s);
+		int x0 = std::max(X0, c.x_start), x1 = std::min(X1, c.x_end);
+		if (x1 <= x0)
+			continue;
+		SplitPart p;
+		p.slab = s; p.dev = c.device; p.stream = c.stream;
+		p.d_mainVolt = c.d_volt; p.d_mainCurr = c.d_curr; p.mainDim = c.local_dim;
+		p.xStartLocal = 1 - c.x_start;
+		p.x0 = x0; p.x1 = x1;
+		p.x1c = std::min(x1, X1 - 1);	// currents: the last transverse line is not updated
+		size_t bytes = (size_t)(x1 - x0) * nT * 2 * sizeof(FDTD_FLOAT);
+		checkCuda(cudaSetDevice(c.device));
+		checkCuda(cudaMalloc(&p.d_buf, bytes));
+		checkCuda(cudaEventCreateWithFlags(&p.evSlab, cudaEventDisableTiming));
+		if (c.device != co.device)
+		{
+			cudaError_t e = cudaDeviceEnablePeerAccess(co.device, 0);
+			if (e == cudaErrorPeerAccessAlreadyEnabled) cudaGetLastError();
+		}
+		checkCuda(cudaSetDevice(co.device));
+		checkCuda(cudaMalloc(&p.d_stage, bytes));
+		checkCuda(cudaEventCreateWithFlags(&p.evOwner, cudaEventDisableTiming));
+		if (c.device != co.device)
+		{
+			cudaError_t e = cudaDeviceEnablePeerAccess(c.device, 0);
+			if (e == cudaErrorPeerAccessAlreadyEnabled) cudaGetLastError();
+		}
+		m_parts.push_back(p);
+	}
+	std::cout << "Invisible PML: window x [" << X0 << "," << X1 << ") spans " << m_parts.size()
+	          << " GPU slabs; virtual block on slab " << owner << ", coupling planes exchanged per timestep"
+	          << std::endl;
+}
+
+// main grid plane (on each slab) -> virtual layer (on the owner)
+void Engine_Ext_InvisiblePML::GatherPlane(bool curr, int lineLocal, int mainLine)
+{
+	int T = (m_nyP == 0) ? m_nyPP : m_nyP;
+	int nT = (int)m_numLines[T];
+	int X0 = (int)m_offset[0];
+	for (size_t i = 0; i < m_parts.size(); ++i)
+	{
+		SplitPart& p = m_parts[i];
+		int nx = p.x1 - p.x0;
+		cudaSetDevice(p.dev);
+		ipmlMainPlaneKernel<<<ipmlBlocks((long long)nx * nT), IPML_THREADS, 0, p.stream>>>(
+			curr ? p.d_mainCurr : p.d_mainVolt, p.mainDim, m_ny, T, mainLine,
+			p.x0 + p.xStartLocal, nx, nT, (int)m_offset[T], m_nyP, m_nyPP, 2, p.d_buf, true);
+		ipmlCopy(p.d_stage, m_dev, p.d_buf, p.dev, (size_t)nx * nT * 2 * sizeof(FDTD_FLOAT), p.stream);
+		checkCuda(cudaEventRecord(p.evSlab, p.stream));
+	}
+	cudaSetDevice(m_dev);
+	for (size_t i = 0; i < m_parts.size(); ++i)
+	{
+		SplitPart& p = m_parts[i];
+		int nx = p.x1 - p.x0;
+		checkCuda(cudaStreamWaitEvent(m_stream, p.evSlab, 0));
+		ipmlVirtPlaneKernel<<<ipmlBlocks((long long)nx * nT), IPML_THREADS, 0, m_stream>>>(
+			curr ? d_curr : d_volt, (int)m_numLines[1], (int)m_numLines[2], m_ny, T, lineLocal,
+			p.x0 - X0, nx, nT, m_nyP, m_nyPP, 2, p.d_stage, false);
+	}
+}
+
+// virtual layer (on the owner) -> main grid plane (on each slab). Voltages: the
+// tangential pair over the whole window; currents: the normal component, without
+// the last transverse lines (as Apply2Current)
+void Engine_Ext_InvisiblePML::ScatterPlane(bool curr, int lineLocal, int mainLine)
+{
+	int T = (m_nyP == 0) ? m_nyPP : m_nyP;
+	int nT = (int)m_numLines[T] - (curr ? 1 : 0);
+	int X0 = (int)m_offset[0];
+	int nComp = curr ? 1 : 2;
+	int c0 = curr ? m_ny : m_nyP, c1 = curr ? m_ny : m_nyPP;
+	cudaSetDevice(m_dev);
+	for (size_t i = 0; i < m_parts.size(); ++i)
+	{
+		SplitPart& p = m_parts[i];
+		int nx = (curr ? p.x1c : p.x1) - p.x0;
+		if (nx <= 0) continue;
+		ipmlVirtPlaneKernel<<<ipmlBlocks((long long)nx * nT), IPML_THREADS, 0, m_stream>>>(
+			curr ? d_curr : d_volt, (int)m_numLines[1], (int)m_numLines[2], m_ny, T, lineLocal,
+			p.x0 - X0, nx, nT, c0, c1, nComp, p.d_stage, true);
+		ipmlCopy(p.d_buf, p.dev, p.d_stage, m_dev, (size_t)nx * nT * nComp * sizeof(FDTD_FLOAT), m_stream);
+		checkCuda(cudaEventRecord(p.evOwner, m_stream));
+	}
+	for (size_t i = 0; i < m_parts.size(); ++i)
+	{
+		SplitPart& p = m_parts[i];
+		int nx = (curr ? p.x1c : p.x1) - p.x0;
+		if (nx <= 0) continue;
+		cudaSetDevice(p.dev);
+		checkCuda(cudaStreamWaitEvent(p.stream, p.evOwner, 0));
+		ipmlMainPlaneKernel<<<ipmlBlocks((long long)nx * nT), IPML_THREADS, 0, p.stream>>>(
+			curr ? p.d_mainCurr : p.d_mainVolt, p.mainDim, m_ny, T, mainLine,
+			p.x0 + p.xStartLocal, nx, nT, (int)m_offset[T], c0, c1, nComp, p.d_buf, false);
+	}
 }

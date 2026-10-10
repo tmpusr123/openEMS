@@ -81,6 +81,10 @@ public:
 	//! The main-grid x planes this sheet reads or writes, inclusive: its sheet and
 	//! ghost planes if x-normal, otherwise its window's x lines. Multi-GPU slab
 	//! cuts must not fall inside (the CUDA engine keeps the block on one slab).
+	//! An x-normal sheet can never be split across slabs; any other one can (the
+	//! CUDA engine then exchanges its coupling planes each timestep).
+	bool IsXNormal() const {return m_ny==0;}
+
 	void MainXSpan(unsigned int& lo, unsigned int& hi) const
 	{
 		if (m_ny==0)
